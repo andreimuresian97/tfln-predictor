@@ -9,7 +9,7 @@ from pathlib import Path
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="TFLN Geometry Predictor", layout="centered")
 
-st.title("⚡ 1310 nm TFLN Performance Predictor")
+st.title("⚡ TFLN Performance Predictor (1310 nm)")
 st.markdown("""
 Instant inference for **VPI, nm, Z0, and S21**.  
 **Note:** All predictions are performed at **1330 nm**.
@@ -277,3 +277,4 @@ if st.button("Predict Performance", type="primary"):
         
         data = [[k, f"{v['value']:.4f}", f"[{v['lower_bound']:.4f}, {v['upper_bound']:.4f}]"] for k, v in results.items()]
         st.table(pd.DataFrame(data, columns=["FOM", "Value", "95% CI"]))
+
