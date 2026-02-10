@@ -1,6 +1,7 @@
 streamlit
-numpy<2.0.0
-scikit-learn<1.6.0
-scipy<1.14.0
-pandas<2.2.0
+numpy
+scikit-learn
+scipy
+pandas
 matplotlib
+
