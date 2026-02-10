@@ -159,10 +159,8 @@ def generate_exact_svg(p):
     # ==========================================
     
     SCALE_TOP = 3.5 
-    
-    # [FIX] Increased Canvas Height for Top View to prevent cut-off
     CV_H_TOP = 700 
-    CY_TOP = 380 # Center Y
+    CY_TOP = 380 
     
     def to_top(x, y): 
         return CX + x*SCALE_TOP, CY_TOP - y*SCALE_TOP
@@ -179,8 +177,6 @@ def generate_exact_svg(p):
     
     # Arrows
     arrows_top = ""
-    
-    # [FIX] Increased offsets (distance from drawing) to prevent overlapping
     top_arrow_y = 120 
     bot_arrow_y = -120 
     side_arrow_offset = 20
@@ -194,20 +190,19 @@ def generate_exact_svg(p):
     l2_x = GAP/2 + W1 + W2 + side_arrow_offset
     arrows_top += svg_arrow(*to_top(l2_x, -L2/2), *to_top(l2_x, L2/2), "L2", "right", 10)
     
-    # These inner width arrows need to be pushed down further to avoid hitting the GAP arrow
     w_arrows_y_top = L2/2 + side_arrow_offset
     w_arrows_y_bot = -L1/2 - side_arrow_offset
-    
     arrows_top += svg_arrow(*to_top(GAP/2, w_arrows_y_bot), *to_top(GAP/2 + W1, w_arrows_y_bot), "W1", "bottom", 10)
     arrows_top += svg_arrow(*to_top(GAP/2 + W1, w_arrows_y_top), *to_top(GAP/2 + W1 + W2, w_arrows_y_top), "W2", "top", 10)
 
+    # [FIX] Title moved to Left (x=20) and anchor=start to completely avoid overlap
     svg_top = f"""
     <svg width="{CV_W}" height="{CV_H_TOP}" viewBox="0 0 {CV_W} {CV_H_TOP}" xmlns="http://www.w3.org/2000/svg">
         <defs>
             <marker id="arrow_end" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="black" /></marker>
             <marker id="arrow_start" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M9,0 L9,6 L0,3 z" fill="black" /></marker>
         </defs>
-        <text x="{CX}" y="50" text-anchor="middle" font-family="sans-serif" font-size="24" font-weight="bold">Top-Down View</text>
+        <text x="20" y="50" text-anchor="start" font-family="sans-serif" font-size="24" font-weight="bold">Top-Down View</text>
         
         <rect x="{ws_x1}" y="{ws_y1}" width="{WS*SCALE_TOP}" height="{200*SCALE_TOP}" fill="{C_ELEC}" stroke="{C_LINE}" stroke-width="1.5" />
         <polygon points="{poly_str}" fill="{C_ELEC}" stroke="{C_LINE}" stroke-width="1.5" />
@@ -254,7 +249,6 @@ def generate_exact_svg(p):
         caps_svg += f'<rect x="{rx_svg}" y="{ry_svg}" width="{RIDGE_W*SCALE_CS}" height="{RIDGE_H*SCALE_CS}" fill="black" />'
 
     arrows_cs = ""
-    # [FIX] Increased dim_y to prevent WS arrow from hitting the electrode
     dim_y = base_y_math + max(MTX, CAP_HEIGHT) + (3.0 if MTX < 5 else 0.5 * MTX)
     
     arr_y = dim_y
@@ -270,13 +264,14 @@ def generate_exact_svg(p):
     mtx_y_end = base_y_math + MTX
     arrows_cs += svg_arrow(*to_cs(mtx_x_pos, mtx_y_start), *to_cs(mtx_x_pos, mtx_y_end), "MTX", "right", 10)
     
+    # [FIX] Title moved to Left (x=20) and anchor=start for consistency
     svg_cross = f"""
     <svg width="{CV_W}" height="{CV_H}" viewBox="0 0 {CV_W} {CV_H}" xmlns="http://www.w3.org/2000/svg">
         <defs>
             <marker id="arrow_end" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="black" /></marker>
             <marker id="arrow_start" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M9,0 L9,6 L0,3 z" fill="black" /></marker>
         </defs>
-        <text x="{CX}" y="50" text-anchor="middle" font-family="sans-serif" font-size="24" font-weight="bold">Cross-Section View</text>
+        <text x="20" y="50" text-anchor="start" font-family="sans-serif" font-size="24" font-weight="bold">Cross-Section View</text>
         
         {sub_rect} {bl_rect} {ws_rect} {rwg_rect} {lwg_rect} {caps_svg} {arrows_cs}
     </svg>
