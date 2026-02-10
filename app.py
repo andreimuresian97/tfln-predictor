@@ -1,15 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from matplotlib.figure import Figure # <--- The safe way to plot
-from matplotlib.patches import Rectangle, Polygon
-
-# Import your predictor
-# We wrap this in a try-block just in case the file is missing, so the app doesn't crash
-try:
-    from fast_FOMs_predictor import TFLNPredictor
-except ImportError:
-    st.error("⚠️ Could not import 'fast_FOMs_predictor.py'. Is the file in the repo?")
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="TFLN Geometry Predictor", layout="wide")
@@ -46,151 +37,116 @@ geometry_list = [
     params["L1"], params["L2"], params["W1"], params["W2"]
 ]
 
-# --- PLOTTING LOGIC (Object-Oriented / Server Safe) ---
-def generate_plots(p):
+# --- 100% SAFE SVG PLOTTING LOGIC (NO MATPLOTLIB) ---
+def generate_svg_plots(p):
     W1, W2, L1, L2 = p["W1"], p["W2"], p["L1"], p["L2"]
     WS, GAP, MTX, CAP_W = p["WS"], p["GAP"], p["MTX"], p["CAP_W"]
+    WG = 70.0
     
-    WG_FIXED = 70
-    CAP_HEIGHT_FIXED = 1.4
-    BOTTOM_LAYER_H = 0.23
-    RIDGE_W = 0.8
-    RIDGE_H = 0.23
-    ELECTRODE_COLOR = '#F5BD02'
-    SUBSTRATE_COLOR = '#00FFFF'
-    CAP_COLOR = '#00FFFF'
-    LINE_COLOR = 'black'
-    FONT_SIZE = 8
+    # Scale factors to fit SVG viewbox
+    scale = 3.0 
+    cx, cy = 400, 250 # Center of Top View
     
-    # Helper to draw arrows on a specific axes 'ax'
-    def draw_arrow(ax, x1, y1, x2, y2, text, loc, a_offset, t_offset):
-        ax.annotate(
-            '', xy=(x1, y1), xytext=(x2, y2),
-            arrowprops=dict(arrowstyle='<->', mutation_scale=10, linewidth=0.7, 
-                            color=LINE_COLOR, shrinkA=0, shrinkB=0), zorder=20
-        )
-        mid_x, mid_y = (x1 + x2) / 2, (y1 + y2) / 2
-        ha, va = 'center', 'center'
-        off_x, off_y = 0, 0
-        
-        if loc == 'top': off_y = t_offset; va = 'bottom'
-        elif loc == 'bottom': off_y = -t_offset; va = 'top'
-        elif loc == 'left': off_x = -t_offset; ha = 'right'
-        elif loc == 'right': off_x = t_offset; ha = 'left'
-            
-        ax.text(mid_x + off_x, mid_y + off_y, text, 
-                ha=ha, va=va, fontsize=FONT_SIZE, color=LINE_COLOR, zorder=21)
+    # Colors
+    c_elec = "#F5BD02"
+    c_sub = "#00FFFF"
+    c_line = "black"
 
-    # --- FIGURE 1: TOP-DOWN ---
-    # We use Figure() directly. This creates a plot in memory, not on screen.
-    fig1 = Figure(figsize=(5, 5))
-    ax1 = fig1.subplots()
-    
-    TOP_VIEW_HEIGHT = 200 
-    
-    # 1. Left Electrode
-    ax1.add_patch(Rectangle((-(GAP/2 + WS), -TOP_VIEW_HEIGHT/2), WS, TOP_VIEW_HEIGHT,
-                            linewidth=1, edgecolor=LINE_COLOR, facecolor=ELECTRODE_COLOR))
-
-    # 2. Right Electrode
+    # --- TOP VIEW SVG ---
+    # We build the polygon points string for the Right Electrode
+    # Coordinates relative to center
     pts = [
-        (GAP/2, -TOP_VIEW_HEIGHT/2), (GAP/2 + WG_FIXED, -TOP_VIEW_HEIGHT/2),
-        (GAP/2 + WG_FIXED, TOP_VIEW_HEIGHT/2), (GAP/2, TOP_VIEW_HEIGHT/2),
+        (GAP/2, -100), (GAP/2 + WG, -100), (GAP/2 + WG, 100), (GAP/2, 100),
         (GAP/2, L1/2), (GAP/2 + W1, L1/2), (GAP/2 + W1, L2/2),
         (GAP/2 + W1 + W2, L2/2), (GAP/2 + W1 + W2, -L2/2),
         (GAP/2 + W1, -L2/2), (GAP/2 + W1, -L1/2), (GAP/2, -L1/2)
     ]
-    ax1.add_patch(Polygon(pts, closed=True, linewidth=1, edgecolor=LINE_COLOR, facecolor=ELECTRODE_COLOR))
-
-    # Annotations
-    ao, to = 4.0, 2.0
-    top_y = TOP_VIEW_HEIGHT/2 + ao
-    draw_arrow(ax1, -(GAP/2 + WS), top_y, -GAP/2, top_y, 'WS', 'top', ao, to)
-    l2_x = GAP/2 + W1 + W2 + ao
-    draw_arrow(ax1, l2_x, -L2/2, l2_x, L2/2, 'L2', 'right', ao, to)
-
-    ax1.set_aspect('equal')
-    ax1.axis('off')
-    ax1.set_title("Top-Down View", fontsize=10)
-
-    # --- FIGURE 2: CROSS-SECTION ---
-    fig2 = Figure(figsize=(5, 2))
-    ax2 = fig2.subplots()
+    poly_pts = " ".join([f"{cx + x*scale},{cy - y*scale}" for x, y in pts])
     
-    base_y = BOTTOM_LAYER_H
-    ws_left, ws_right = -WS/2, WS/2
+    # WS Rect
+    ws_x = cx - (GAP/2 + WS)*scale
+    ws_y = cy - 100*scale
+    ws_w = WS * scale
+    ws_h = 200 * scale
+
+    svg_top = f"""
+    <svg width="100%" height="400" xmlns="http://www.w3.org/2000/svg">
+        <text x="10" y="20" font-family="sans-serif" font-size="14">Top-Down View</text>
+        <polygon points="{poly_pts}" fill="{c_elec}" stroke="{c_line}" stroke-width="1" />
+        <rect x="{ws_x}" y="{ws_y}" width="{ws_w}" height="{ws_h}" fill="{c_elec}" stroke="{c_line}" stroke-width="1" />
+        <text x="{cx}" y="{cy}" font-family="sans-serif" font-size="10" text-anchor="middle">GAP: {GAP}</text>
+        <line x1="{cx - GAP/2*scale}" y1="{cy}" x2="{cx + GAP/2*scale}" y2="{cy}" stroke="black" stroke-width="0.5" marker-end="url(#arrow)" />
+    </svg>
+    """
+
+    # --- CROSS SECTION SVG ---
+    cs_scale = 5.0
+    cs_cx, cs_cy = 400, 150
+    base_y = cs_cy  # Y position of the "floor"
     
     # Substrate
-    ax2.add_patch(Rectangle((-1000, -max(MTX, 5)), 2000, max(MTX, 5), fc=SUBSTRATE_COLOR, ec='none'))
-    ax2.add_patch(Rectangle((-1000, 0), 2000, BOTTOM_LAYER_H, fc='black', ec='none'))
-
-    # Electrodes
-    ax2.add_patch(Rectangle((ws_right + GAP, base_y), WG_FIXED, MTX, fc=ELECTRODE_COLOR, ec=LINE_COLOR))
-    ax2.add_patch(Rectangle((ws_left, base_y), WS, MTX, fc=ELECTRODE_COLOR, ec=LINE_COLOR))
-    ax2.add_patch(Rectangle((ws_left - GAP - WG_FIXED, base_y), WG_FIXED, MTX, fc=ELECTRODE_COLOR, ec=LINE_COLOR))
-
-    # Caps
-    for center_x in [ws_right + GAP/2, ws_left - GAP/2]:
-        ax2.add_patch(Rectangle((center_x - CAP_W/2, base_y), CAP_W, CAP_HEIGHT_FIXED, fc=CAP_COLOR, ec=LINE_COLOR))
-        ax2.add_patch(Rectangle((center_x - RIDGE_W/2, base_y), RIDGE_W, RIDGE_H, fc='black'))
-
-    # Annotations
-    ao, to = 0.5, 0.3
-    dim_y = base_y + max(MTX, CAP_HEIGHT_FIXED) + ao
-    draw_arrow(ax2, ws_left, dim_y, ws_right, dim_y, 'WS', 'top', ao, to)
-    draw_arrow(ax2, ws_right, dim_y, ws_right + GAP, dim_y, 'GAP', 'top', ao, to)
+    sub_h = max(MTX, 5) * cs_scale
     
-    ax2.set_aspect('equal')
-    ax2.set_xlim(ws_left - GAP - 10, ws_right + GAP + 10)
-    ax2.set_ylim(-2, dim_y + 2)
-    ax2.axis('off')
-    ax2.set_title("Cross-Section View", fontsize=10)
+    # Rectangles (x, y, w, h)
+    # Note: SVG y grows downwards. so "Up" is negative Y.
     
-    return fig1, fig2
+    # WS Center
+    ws_rect = f'<rect x="{cs_cx - (WS/2)*cs_scale}" y="{base_y - MTX*cs_scale}" width="{WS*cs_scale}" height="{MTX*cs_scale}" fill="{c_elec}" stroke="black" />'
+    
+    # Right WG
+    rwg_rect = f'<rect x="{cs_cx + (WS/2 + GAP)*cs_scale}" y="{base_y - MTX*cs_scale}" width="{WG*cs_scale}" height="{MTX*cs_scale}" fill="{c_elec}" stroke="black" />'
+    
+    # Left WG
+    lwg_rect = f'<rect x="{cs_cx - (WS/2 + GAP + WG)*cs_scale}" y="{base_y - MTX*cs_scale}" width="{WG*cs_scale}" height="{MTX*cs_scale}" fill="{c_elec}" stroke="black" />'
+    
+    # Substrate
+    sub_rect = f'<rect x="0" y="{base_y}" width="800" height="{sub_h}" fill="{c_sub}" />'
+    
+    svg_cross = f"""
+    <svg width="100%" height="200" xmlns="http://www.w3.org/2000/svg">
+        <text x="10" y="20" font-family="sans-serif" font-size="14">Cross-Section</text>
+        {sub_rect}
+        {ws_rect} {rwg_rect} {lwg_rect}
+    </svg>
+    """
+    
+    return svg_top, svg_cross
 
-# --- MAIN LAYOUT ---
+# --- LAYOUT ---
 
 st.subheader("1. Geometry Visualization")
-st.caption("Updates automatically as you change parameters.")
-
-try:
-    fig_top, fig_cross = generate_plots(params)
-    col1, col2 = st.columns(2)
-    with col1:
-        st.pyplot(fig_top)
-    with col2:
-        st.pyplot(fig_cross)
-except Exception as e:
-    st.error(f"Plotting Error: {e}")
+svg_t, svg_c = generate_svg_plots(params)
+c1, c2 = st.columns(2)
+with c1:
+    st.markdown(svg_t, unsafe_allow_html=True)
+with c2:
+    st.markdown(svg_c, unsafe_allow_html=True)
 
 st.markdown("---")
 st.subheader("2. Performance Prediction")
 
 if st.button("Predict Performance", type="primary"):
     try:
+        # Import moved INSIDE the button to prevent startup crashes
+        from fast_FOMs_predictor import TFLNPredictor
+        
         @st.cache_resource
         def load_predictor():
-            # Adjust folder name if necessary!
             return TFLNPredictor(model_dir="gp_surrogate_results_199_8var_fixed")
         
         predictor = load_predictor()
         results = predictor.predict(geometry_list)
         
-        # Display Metrics
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("VPI", f"{results['VPI']['value']:.2f} V")
-        c2.metric("Loss (S21)", f"{results['S21']['value']:.2f} dB")
-        c3.metric("Impedance (Z0)", f"{results['Z0']['value']:.1f} Ω")
-        c4.metric("Index (nm)", f"{results['nm']['value']:.3f}")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("VPI", f"{results['VPI']['value']:.2f} V")
+        col2.metric("Loss (S21)", f"{results['S21']['value']:.2f} dB")
+        col3.metric("Impedance (Z0)", f"{results['Z0']['value']:.1f} Ω")
+        col4.metric("Index (nm)", f"{results['nm']['value']:.3f}")
         
-        # Display Table
         data = []
         for fom, res in results.items():
-            val = f"{res['value']:.4f}"
-            ci = f"[{res['lower_bound']:.4f}, {res['upper_bound']:.4f}]"
-            data.append([fom, val, ci])
-            
+            data.append([fom, f"{res['value']:.4f}", f"[{res['lower_bound']:.4f}, {res['upper_bound']:.4f}]"])
         st.table(pd.DataFrame(data, columns=["FOM", "Value", "95% CI"]))
             
     except Exception as e:
-        st.error(f"Prediction Error: {e}")
+        st.error(f"Error: {e}")
