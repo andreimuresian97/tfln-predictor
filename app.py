@@ -9,7 +9,7 @@ from pathlib import Path
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="TFLN Geometry Predictor", layout="centered")
 
-st.title("⚡ TFLN Performance Predictor")
+st.title("⚡ 1310 nm TFLN Performance Predictor")
 st.markdown("""
 Instant inference for **VPI, nm, Z0, and S21**.  
 **Note:** All predictions are performed at **1330 nm**.
@@ -138,7 +138,8 @@ def generate_exact_svg(p):
     C_CAP = '#00FFFF'
     C_LINE = 'black'
     
-    def svg_arrow(x1, y1, x2, y2, text, text_loc="top", offset=10):
+    # Helper for Arrows (Now accepts font_size for scaling correction)
+    def svg_arrow(x1, y1, x2, y2, text, text_loc="top", offset=10, font_size=12):
         line = f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{C_LINE}" stroke-width="1" marker-start="url(#arrow_start)" marker-end="url(#arrow_end)" />'
         mx, my = (x1 + x2)/2, (y1 + y2)/2
         tx, ty = mx, my
@@ -148,13 +149,14 @@ def generate_exact_svg(p):
         elif text_loc == "bottom": ty += offset; dominant = "hanging"
         elif text_loc == "left": tx -= offset; anchor = "end"
         elif text_loc == "right": tx += offset; anchor = "start"
-        txt = f'<text x="{tx}" y="{ty}" fill="{C_LINE}" font-family="sans-serif" font-size="12" text-anchor="{anchor}" dominant-baseline="{dominant}">{text}</text>'
+        
+        txt = f'<text x="{tx}" y="{ty}" fill="{C_LINE}" font-family="sans-serif" font-size="{font_size}" text-anchor="{anchor}" dominant-baseline="{dominant}">{text}</text>'
         return line + txt
 
     # --- FIGURE 1: TOP-DOWN VIEW ---
     scale = 3.0
     cx = 400
-    cy = 400 # Moved down from 300 to 400 to prevent top clipping
+    cy = 400 
     
     def to_svg(x, y): return cx + x*scale, cy - y*scale
 
@@ -170,7 +172,8 @@ def generate_exact_svg(p):
     arrows_svg = ""
     ao = 15 
     top_y = 104
-    # WS and WG arrows (now visible because cy is lower)
+    
+    # Standard Font Size (12) for Top View
     arrows_svg += svg_arrow(*to_svg(-(GAP/2 + WS), top_y), *to_svg(-GAP/2, top_y), "WS", "top", 10)
     arrows_svg += svg_arrow(*to_svg(GAP/2, top_y), *to_svg(GAP/2 + WG, top_y), "WG", "top", 10)
     
@@ -185,7 +188,6 @@ def generate_exact_svg(p):
     w2_y = L2/2 + 4
     arrows_svg += svg_arrow(*to_svg(GAP/2 + W1, w2_y), *to_svg(GAP/2 + W1 + W2, w2_y), "W2", "top", 10)
 
-    # Height increased to 800 to accommodate shift
     svg_top = f"""
     <svg width="800" height="800" viewBox="0 0 800 800" xmlns="http://www.w3.org/2000/svg">
         <defs>
@@ -227,11 +229,16 @@ def generate_exact_svg(p):
 
     cs_arrows = ""
     dim_y = base_y_math + max(MTX, CAP_HEIGHT) + 2.0
-    cs_arrows += svg_arrow(*cs_to_svg(-WS/2, dim_y), *cs_to_svg(WS/2, dim_y), "WS", "top", 10)
-    cs_arrows += svg_arrow(*cs_to_svg(WS/2, dim_y), *cs_to_svg(WS/2 + GAP, dim_y), "GAP", "top", 10)
+    
+    # Use SMALLER FONT (6) because this view is magnified 2x relative to top view.
+    # 6 * 2 = 12 (Visual Match)
+    CS_FONT = 6 
+    
+    cs_arrows += svg_arrow(*cs_to_svg(-WS/2, dim_y), *cs_to_svg(WS/2, dim_y), "WS", "top", 10, font_size=CS_FONT)
+    cs_arrows += svg_arrow(*cs_to_svg(WS/2, dim_y), *cs_to_svg(WS/2 + GAP, dim_y), "GAP", "top", 10, font_size=CS_FONT)
     l_gap_c = -WS/2 - GAP/2
     cap_y = base_y_math + CAP_HEIGHT + 1.0
-    cs_arrows += svg_arrow(*cs_to_svg(l_gap_c - CAP_W/2, cap_y), *cs_to_svg(l_gap_c + CAP_W/2, cap_y), "CAP_W", "top", 10)
+    cs_arrows += svg_arrow(*cs_to_svg(l_gap_c - CAP_W/2, cap_y), *cs_to_svg(l_gap_c + CAP_W/2, cap_y), "CAP_W", "top", 10, font_size=CS_FONT)
     
     svg_cross = f"""
     <svg width="800" height="400" viewBox="200 100 400 300" xmlns="http://www.w3.org/2000/svg">
@@ -239,7 +246,7 @@ def generate_exact_svg(p):
             <marker id="arrow_end" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="black" /></marker>
             <marker id="arrow_start" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M9,0 L9,6 L0,3 z" fill="black" /></marker>
         </defs>
-        <text x="400" y="120" text-anchor="middle" font-family="sans-serif" font-size="16" font-weight="bold">Cross-Section View</text>
+        <text x="400" y="120" text-anchor="middle" font-family="sans-serif" font-size="8" font-weight="bold">Cross-Section View</text>
         {sub_rect} {bl_rect} {ws_rect} {rwg_rect} {lwg_rect} {caps_svg} {cs_arrows}
     </svg>
     """
