@@ -160,10 +160,9 @@ def generate_exact_svg(p):
     
     SCALE_TOP = 3.5 
     
-    # [FIX 1] Moved CY_TOP down from 350 to 450. 
-    # Max drawing height is 100 * 3.5 = 350px.
-    # 450 - 350 = 100px. Title is at 50px. No overlap.
-    CY_TOP = 450 
+    # [FIX] Increased Canvas Height for Top View to prevent cut-off
+    CV_H_TOP = 700 
+    CY_TOP = 380 # Center Y
     
     def to_top(x, y): 
         return CX + x*SCALE_TOP, CY_TOP - y*SCALE_TOP
@@ -180,25 +179,30 @@ def generate_exact_svg(p):
     
     # Arrows
     arrows_top = ""
-    arr_y_top = 110 
-    arr_y_bot = -110
     
-    arrows_top += svg_arrow(*to_top(-(GAP/2 + WS), arr_y_top), *to_top(-GAP/2, arr_y_top), "WS", "top", 10)
-    arrows_top += svg_arrow(*to_top(GAP/2, arr_y_top), *to_top(GAP/2 + WG, arr_y_top), "WG", "top", 10)
-    arrows_top += svg_arrow(*to_top(-GAP/2, arr_y_bot), *to_top(GAP/2, arr_y_bot), "GAP", "bottom", 10)
+    # [FIX] Increased offsets (distance from drawing) to prevent overlapping
+    top_arrow_y = 120 
+    bot_arrow_y = -120 
+    side_arrow_offset = 20
     
-    l1_x = GAP/2 - 6
+    arrows_top += svg_arrow(*to_top(-(GAP/2 + WS), top_arrow_y), *to_top(-GAP/2, top_arrow_y), "WS", "top", 10)
+    arrows_top += svg_arrow(*to_top(GAP/2, top_arrow_y), *to_top(GAP/2 + WG, top_arrow_y), "WG", "top", 10)
+    arrows_top += svg_arrow(*to_top(-GAP/2, bot_arrow_y), *to_top(GAP/2, bot_arrow_y), "GAP", "bottom", 10)
+    
+    l1_x = GAP/2 - side_arrow_offset
     arrows_top += svg_arrow(*to_top(l1_x, -L1/2), *to_top(l1_x, L1/2), "L1", "left", 10)
-    l2_x = GAP/2 + W1 + W2 + 6
+    l2_x = GAP/2 + W1 + W2 + side_arrow_offset
     arrows_top += svg_arrow(*to_top(l2_x, -L2/2), *to_top(l2_x, L2/2), "L2", "right", 10)
     
-    w1_y = -L1/2 - 6
-    arrows_top += svg_arrow(*to_top(GAP/2, w1_y), *to_top(GAP/2 + W1, w1_y), "W1", "bottom", 10)
-    w2_y = L2/2 + 6
-    arrows_top += svg_arrow(*to_top(GAP/2 + W1, w2_y), *to_top(GAP/2 + W1 + W2, w2_y), "W2", "top", 10)
+    # These inner width arrows need to be pushed down further to avoid hitting the GAP arrow
+    w_arrows_y_top = L2/2 + side_arrow_offset
+    w_arrows_y_bot = -L1/2 - side_arrow_offset
+    
+    arrows_top += svg_arrow(*to_top(GAP/2, w_arrows_y_bot), *to_top(GAP/2 + W1, w_arrows_y_bot), "W1", "bottom", 10)
+    arrows_top += svg_arrow(*to_top(GAP/2 + W1, w_arrows_y_top), *to_top(GAP/2 + W1 + W2, w_arrows_y_top), "W2", "top", 10)
 
     svg_top = f"""
-    <svg width="{CV_W}" height="{CV_H}" viewBox="0 0 {CV_W} {CV_H}" xmlns="http://www.w3.org/2000/svg">
+    <svg width="{CV_W}" height="{CV_H_TOP}" viewBox="0 0 {CV_W} {CV_H_TOP}" xmlns="http://www.w3.org/2000/svg">
         <defs>
             <marker id="arrow_end" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="black" /></marker>
             <marker id="arrow_start" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M9,0 L9,6 L0,3 z" fill="black" /></marker>
@@ -212,7 +216,7 @@ def generate_exact_svg(p):
     """
 
     # ==========================================
-    # FIGURE 2: CROSS SECTION VIEW
+    # FIGURE 2: CROSS SECTION VIEW (ZOOMED)
     # ==========================================
     
     CROP_MARGIN = 1.0
@@ -250,20 +254,18 @@ def generate_exact_svg(p):
         caps_svg += f'<rect x="{rx_svg}" y="{ry_svg}" width="{RIDGE_W*SCALE_CS}" height="{RIDGE_H*SCALE_CS}" fill="black" />'
 
     arrows_cs = ""
-    dim_y = base_y_math + max(MTX, CAP_HEIGHT) + (2.0 if MTX < 5 else 0.5 * MTX)
+    # [FIX] Increased dim_y to prevent WS arrow from hitting the electrode
+    dim_y = base_y_math + max(MTX, CAP_HEIGHT) + (3.0 if MTX < 5 else 0.5 * MTX)
     
     arr_y = dim_y
     arrows_cs += svg_arrow(*to_cs(-WS/2, arr_y), *to_cs(WS/2, arr_y), "WS", "top", 15)
     arrows_cs += svg_arrow(*to_cs(WS/2, arr_y), *to_cs(WS/2 + GAP, arr_y), "GAP", "top", 15)
     
     l_gap_c = -WS/2 - GAP/2
-    cap_arr_y = base_y_math + CAP_HEIGHT + 0.5
+    cap_arr_y = base_y_math + CAP_HEIGHT + 1.0
     arrows_cs += svg_arrow(*to_cs(l_gap_c - CAP_W/2, cap_arr_y), *to_cs(l_gap_c + CAP_W/2, cap_arr_y), "CAP_W", "top", 15)
     
-    # [FIX 2] Add MTX Arrow inside the Signal Electrode
-    # Arrow from y=base_y to y=base_y+MTX
-    # X position = inside WS, slightly to the right of left edge
-    mtx_x_pos = -WS/2 + 2.0 # 2um inside
+    mtx_x_pos = -WS/2 + 2.0 
     mtx_y_start = base_y_math
     mtx_y_end = base_y_math + MTX
     arrows_cs += svg_arrow(*to_cs(mtx_x_pos, mtx_y_start), *to_cs(mtx_x_pos, mtx_y_end), "MTX", "right", 10)
