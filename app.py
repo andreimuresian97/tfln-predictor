@@ -9,7 +9,7 @@ from pathlib import Path
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="TFLN Geometry Predictor", layout="centered")
 
-st.title("⚡ TFLN Performance Predictor (1310 nm)")
+st.title("⚡ TFLN Performance Predictor")
 st.markdown("""
 Instant inference for **VPI, nm, Z0, and S21**.  
 **Note:** All predictions are performed at **1330 nm**.
@@ -138,8 +138,14 @@ def generate_exact_svg(p):
     C_CAP = '#00FFFF'
     C_LINE = 'black'
     
-    # Helper for Arrows (Now accepts font_size for scaling correction)
-    def svg_arrow(x1, y1, x2, y2, text, text_loc="top", offset=10, font_size=12):
+    # UNIFIED SCALE FOR BOTH PLOTS
+    GLOBAL_SCALE = 5.0  # Pixels per micron (Consistent across both views)
+    
+    # Center X is shared (800px width / 2)
+    CX = 400
+    
+    # Helper for Arrows
+    def svg_arrow(x1, y1, x2, y2, text, text_loc="top", offset=10):
         line = f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{C_LINE}" stroke-width="1" marker-start="url(#arrow_start)" marker-end="url(#arrow_end)" />'
         mx, my = (x1 + x2)/2, (y1 + y2)/2
         tx, ty = mx, my
@@ -150,15 +156,12 @@ def generate_exact_svg(p):
         elif text_loc == "left": tx -= offset; anchor = "end"
         elif text_loc == "right": tx += offset; anchor = "start"
         
-        txt = f'<text x="{tx}" y="{ty}" fill="{C_LINE}" font-family="sans-serif" font-size="{font_size}" text-anchor="{anchor}" dominant-baseline="{dominant}">{text}</text>'
+        txt = f'<text x="{tx}" y="{ty}" fill="{C_LINE}" font-family="sans-serif" font-size="12" text-anchor="{anchor}" dominant-baseline="{dominant}">{text}</text>'
         return line + txt
 
     # --- FIGURE 1: TOP-DOWN VIEW ---
-    scale = 3.0
-    cx = 400
-    cy = 400 
-    
-    def to_svg(x, y): return cx + x*scale, cy - y*scale
+    CY_TOP = 400 
+    def to_svg_top(x, y): return CX + x*GLOBAL_SCALE, CY_TOP - y*GLOBAL_SCALE
 
     pts = [
         (GAP/2, -100), (GAP/2 + WG, -100), (GAP/2 + WG, 100), (GAP/2, 100),
@@ -166,27 +169,24 @@ def generate_exact_svg(p):
         (GAP/2 + W1 + W2, L2/2), (GAP/2 + W1 + W2, -L2/2),
         (GAP/2 + W1, -L2/2), (GAP/2 + W1, -L1/2), (GAP/2, -L1/2)
     ]
-    poly_str = " ".join([f"{to_svg(x,y)[0]},{to_svg(x,y)[1]}" for x, y in pts])
-    ws_x1, ws_y1 = to_svg(-(GAP/2 + WS), 100)
+    poly_str = " ".join([f"{to_svg_top(x,y)[0]},{to_svg_top(x,y)[1]}" for x, y in pts])
+    ws_x1, ws_y1 = to_svg_top(-(GAP/2 + WS), 100)
     
     arrows_svg = ""
-    ao = 15 
     top_y = 104
-    
-    # Standard Font Size (12) for Top View
-    arrows_svg += svg_arrow(*to_svg(-(GAP/2 + WS), top_y), *to_svg(-GAP/2, top_y), "WS", "top", 10)
-    arrows_svg += svg_arrow(*to_svg(GAP/2, top_y), *to_svg(GAP/2 + WG, top_y), "WG", "top", 10)
+    arrows_svg += svg_arrow(*to_svg_top(-(GAP/2 + WS), top_y), *to_svg_top(-GAP/2, top_y), "WS", "top", 10)
+    arrows_svg += svg_arrow(*to_svg_top(GAP/2, top_y), *to_svg_top(GAP/2 + WG, top_y), "WG", "top", 10)
     
     bot_y = -104
-    arrows_svg += svg_arrow(*to_svg(-GAP/2, bot_y), *to_svg(GAP/2, bot_y), "GAP", "bottom", 10)
+    arrows_svg += svg_arrow(*to_svg_top(-GAP/2, bot_y), *to_svg_top(GAP/2, bot_y), "GAP", "bottom", 10)
     l1_x = GAP/2 - 4
-    arrows_svg += svg_arrow(*to_svg(l1_x, -L1/2), *to_svg(l1_x, L1/2), "L1", "left", 10)
+    arrows_svg += svg_arrow(*to_svg_top(l1_x, -L1/2), *to_svg_top(l1_x, L1/2), "L1", "left", 10)
     l2_x = GAP/2 + W1 + W2 + 4
-    arrows_svg += svg_arrow(*to_svg(l2_x, -L2/2), *to_svg(l2_x, L2/2), "L2", "right", 10)
+    arrows_svg += svg_arrow(*to_svg_top(l2_x, -L2/2), *to_svg_top(l2_x, L2/2), "L2", "right", 10)
     w1_y = -L1/2 - 4
-    arrows_svg += svg_arrow(*to_svg(GAP/2, w1_y), *to_svg(GAP/2 + W1, w1_y), "W1", "bottom", 10)
+    arrows_svg += svg_arrow(*to_svg_top(GAP/2, w1_y), *to_svg_top(GAP/2 + W1, w1_y), "W1", "bottom", 10)
     w2_y = L2/2 + 4
-    arrows_svg += svg_arrow(*to_svg(GAP/2 + W1, w2_y), *to_svg(GAP/2 + W1 + W2, w2_y), "W2", "top", 10)
+    arrows_svg += svg_arrow(*to_svg_top(GAP/2 + W1, w2_y), *to_svg_top(GAP/2 + W1 + W2, w2_y), "W2", "top", 10)
 
     svg_top = f"""
     <svg width="800" height="800" viewBox="0 0 800 800" xmlns="http://www.w3.org/2000/svg">
@@ -195,58 +195,72 @@ def generate_exact_svg(p):
             <marker id="arrow_start" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M9,0 L9,6 L0,3 z" fill="black" /></marker>
         </defs>
         <text x="400" y="30" text-anchor="middle" font-family="sans-serif" font-size="16" font-weight="bold">Top-Down View</text>
-        <rect x="{ws_x1}" y="{ws_y1}" width="{WS*scale}" height="{200*scale}" fill="{C_ELEC}" stroke="{C_LINE}" />
+        <rect x="{ws_x1}" y="{ws_y1}" width="{WS*GLOBAL_SCALE}" height="{200*GLOBAL_SCALE}" fill="{C_ELEC}" stroke="{C_LINE}" />
         <polygon points="{poly_str}" fill="{C_ELEC}" stroke="{C_LINE}" />
         {arrows_svg}
     </svg>
     """
 
-    # --- FIGURE 2: CROSS SECTION ---
-    cs_scale = 8.0 
-    cs_cx, cs_cy = 400, 250
-    def cs_to_svg(x, y): return cs_cx + x*cs_scale, cs_cy - y*cs_scale
+    # --- FIGURE 2: CROSS SECTION (ZOOMED & CROPPED) ---
+    CY_CS = 250
+    def to_svg_cs(x, y): return CX + x*GLOBAL_SCALE, CY_CS - y*GLOBAL_SCALE
 
+    # VIEW_EXTENSION LOGIC
+    # We want to show from Left WG outer edge to Right WG outer edge + 1 um buffer
+    VIEW_EXTENSION = 1.0
+    x_min = -(WS/2 + GAP + WG) - VIEW_EXTENSION
+    x_max = (WS/2 + GAP + WG) + VIEW_EXTENSION
+    
+    # Calculate SVG ViewBox Width based on the physical width + scale
+    view_width_px = (x_max - x_min) * GLOBAL_SCALE
+    view_height_px = 300 # Fixed height for the strip
+    
+    # The center of the SVG is 400. We want to align our cropped view with that.
+    # But since we use absolute coordinates relative to CX=400, we just need to calculate
+    # the viewBox 'x' starting point correctly.
+    viewbox_x = CX + x_min * GLOBAL_SCALE
+    
     base_y_math = BOTTOM_LAYER_H
     sub_depth = max(MTX, 5)
-    _, sub_y = cs_to_svg(-100, 0) 
-    sub_rect = f'<rect x="0" y="{sub_y}" width="800" height="{sub_depth*cs_scale}" fill="{C_SUB}" />'
-    _, bl_y = cs_to_svg(-100, BOTTOM_LAYER_H)
-    bl_rect = f'<rect x="0" y="{bl_y}" width="800" height="{BOTTOM_LAYER_H*cs_scale}" fill="black" />'
     
-    ws_x, ws_y = cs_to_svg(-WS/2, base_y_math + MTX)
-    ws_rect = f'<rect x="{ws_x}" y="{ws_y}" width="{WS*cs_scale}" height="{MTX*cs_scale}" fill="{C_ELEC}" stroke="{C_LINE}" />'
-    rwg_x, rwg_y = cs_to_svg(WS/2 + GAP, base_y_math + MTX)
-    rwg_rect = f'<rect x="{rwg_x}" y="{rwg_y}" width="{WG*cs_scale}" height="{MTX*cs_scale}" fill="{C_ELEC}" stroke="{C_LINE}" />'
-    lwg_x, lwg_y = cs_to_svg(-(WS/2 + GAP + WG), base_y_math + MTX)
-    lwg_rect = f'<rect x="{lwg_x}" y="{lwg_y}" width="{WG*cs_scale}" height="{MTX*cs_scale}" fill="{C_ELEC}" stroke="{C_LINE}" />'
+    # We draw wide rectangles (width=800) to ensure they cover the view, 
+    # but the viewBox will crop them.
+    _, sub_y = to_svg_cs(-100, 0) 
+    sub_rect = f'<rect x="0" y="{sub_y}" width="800" height="{sub_depth*GLOBAL_SCALE}" fill="{C_SUB}" />'
+    _, bl_y = to_svg_cs(-100, BOTTOM_LAYER_H)
+    bl_rect = f'<rect x="0" y="{bl_y}" width="800" height="{BOTTOM_LAYER_H*GLOBAL_SCALE}" fill="black" />'
+    
+    ws_x, ws_y = to_svg_cs(-WS/2, base_y_math + MTX)
+    ws_rect = f'<rect x="{ws_x}" y="{ws_y}" width="{WS*GLOBAL_SCALE}" height="{MTX*GLOBAL_SCALE}" fill="{C_ELEC}" stroke="{C_LINE}" />'
+    rwg_x, rwg_y = to_svg_cs(WS/2 + GAP, base_y_math + MTX)
+    rwg_rect = f'<rect x="{rwg_x}" y="{rwg_y}" width="{WG*GLOBAL_SCALE}" height="{MTX*GLOBAL_SCALE}" fill="{C_ELEC}" stroke="{C_LINE}" />'
+    lwg_x, lwg_y = to_svg_cs(-(WS/2 + GAP + WG), base_y_math + MTX)
+    lwg_rect = f'<rect x="{lwg_x}" y="{lwg_y}" width="{WG*GLOBAL_SCALE}" height="{MTX*GLOBAL_SCALE}" fill="{C_ELEC}" stroke="{C_LINE}" />'
     
     caps_svg = ""
     for center_x in [WS/2 + GAP/2, -WS/2 - GAP/2]:
-        cx_svg, cy_svg = cs_to_svg(center_x - CAP_W/2, base_y_math + CAP_HEIGHT)
-        caps_svg += f'<rect x="{cx_svg}" y="{cy_svg}" width="{CAP_W*cs_scale}" height="{CAP_HEIGHT*cs_scale}" fill="{C_CAP}" stroke="{C_LINE}" />'
-        rx_svg, ry_svg = cs_to_svg(center_x - RIDGE_W/2, base_y_math + RIDGE_H)
-        caps_svg += f'<rect x="{rx_svg}" y="{ry_svg}" width="{RIDGE_W*cs_scale}" height="{RIDGE_H*cs_scale}" fill="black" />'
+        cx_svg, cy_svg = to_svg_cs(center_x - CAP_W/2, base_y_math + CAP_HEIGHT)
+        caps_svg += f'<rect x="{cx_svg}" y="{cy_svg}" width="{CAP_W*GLOBAL_SCALE}" height="{CAP_HEIGHT*GLOBAL_SCALE}" fill="{C_CAP}" stroke="{C_LINE}" />'
+        rx_svg, ry_svg = to_svg_cs(center_x - RIDGE_W/2, base_y_math + RIDGE_H)
+        caps_svg += f'<rect x="{rx_svg}" y="{ry_svg}" width="{RIDGE_W*GLOBAL_SCALE}" height="{RIDGE_H*GLOBAL_SCALE}" fill="black" />'
 
     cs_arrows = ""
     dim_y = base_y_math + max(MTX, CAP_HEIGHT) + 2.0
     
-    # Use SMALLER FONT (6) because this view is magnified 2x relative to top view.
-    # 6 * 2 = 12 (Visual Match)
-    CS_FONT = 6 
-    
-    cs_arrows += svg_arrow(*cs_to_svg(-WS/2, dim_y), *cs_to_svg(WS/2, dim_y), "WS", "top", 10, font_size=CS_FONT)
-    cs_arrows += svg_arrow(*cs_to_svg(WS/2, dim_y), *cs_to_svg(WS/2 + GAP, dim_y), "GAP", "top", 10, font_size=CS_FONT)
+    # Use standard size 12 font because now scale is 1:1 with Top View
+    cs_arrows += svg_arrow(*to_svg_cs(-WS/2, dim_y), *to_svg_cs(WS/2, dim_y), "WS", "top", 10)
+    cs_arrows += svg_arrow(*to_svg_cs(WS/2, dim_y), *to_svg_cs(WS/2 + GAP, dim_y), "GAP", "top", 10)
     l_gap_c = -WS/2 - GAP/2
     cap_y = base_y_math + CAP_HEIGHT + 1.0
-    cs_arrows += svg_arrow(*cs_to_svg(l_gap_c - CAP_W/2, cap_y), *cs_to_svg(l_gap_c + CAP_W/2, cap_y), "CAP_W", "top", 10, font_size=CS_FONT)
+    cs_arrows += svg_arrow(*to_svg_cs(l_gap_c - CAP_W/2, cap_y), *to_svg_cs(l_gap_c + CAP_W/2, cap_y), "CAP_W", "top", 10)
     
     svg_cross = f"""
-    <svg width="800" height="400" viewBox="200 100 400 300" xmlns="http://www.w3.org/2000/svg">
+    <svg width="800" height="400" viewBox="{viewbox_x} 100 {view_width_px} 300" xmlns="http://www.w3.org/2000/svg">
         <defs>
             <marker id="arrow_end" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="black" /></marker>
             <marker id="arrow_start" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M9,0 L9,6 L0,3 z" fill="black" /></marker>
         </defs>
-        <text x="400" y="120" text-anchor="middle" font-family="sans-serif" font-size="8" font-weight="bold">Cross-Section View</text>
+        <text x="{CX}" y="120" text-anchor="middle" font-family="sans-serif" font-size="16" font-weight="bold">Cross-Section View</text>
         {sub_rect} {bl_rect} {ws_rect} {rwg_rect} {lwg_rect} {caps_svg} {cs_arrows}
     </svg>
     """
@@ -277,4 +291,3 @@ if st.button("Predict Performance", type="primary"):
         
         data = [[k, f"{v['value']:.4f}", f"[{v['lower_bound']:.4f}, {v['upper_bound']:.4f}]"] for k, v in results.items()]
         st.table(pd.DataFrame(data, columns=["FOM", "Value", "95% CI"]))
-
