@@ -136,14 +136,10 @@ def generate_exact_svg(p):
     C_LINE = 'black'
     
     # === GLOBAL CANVAS SETTINGS ===
-    # Both images will use exactly this coordinate space.
-    # No viewBox scaling tricks. This ensures Font Size 16 is always 16 pixels.
     CV_W = 800
     CV_H = 600
     CX = CV_W / 2
     
-    # Helper to draw arrows
-    # Note: font_size is fixed pixels now
     def svg_arrow(x1, y1, x2, y2, text, text_loc="top", offset=10, font_size=14):
         line = f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{C_LINE}" stroke-width="1.5" marker-start="url(#arrow_start)" marker-end="url(#arrow_end)" />'
         mx, my = (x1 + x2)/2, (y1 + y2)/2
@@ -162,11 +158,12 @@ def generate_exact_svg(p):
     # FIGURE 1: TOP-DOWN VIEW
     # ==========================================
     
-    # 1. Define Scale to fit ~250um width into 800px with margins
-    # Total Width ~ WS + 2*GAP + 2*WG = 22 + 20 + 140 = 182um
-    # 800px / 200um = 4 px/um
     SCALE_TOP = 3.5 
-    CY_TOP = 350 # Moved down to avoid title overlap (Title at y=40)
+    
+    # [FIX 1] Moved CY_TOP down from 350 to 450. 
+    # Max drawing height is 100 * 3.5 = 350px.
+    # 450 - 350 = 100px. Title is at 50px. No overlap.
+    CY_TOP = 450 
     
     def to_top(x, y): 
         return CX + x*SCALE_TOP, CY_TOP - y*SCALE_TOP
@@ -183,8 +180,8 @@ def generate_exact_svg(p):
     
     # Arrows
     arrows_top = ""
-    arr_y_top = 110 # Above the device
-    arr_y_bot = -110 # Below the device
+    arr_y_top = 110 
+    arr_y_bot = -110
     
     arrows_top += svg_arrow(*to_top(-(GAP/2 + WS), arr_y_top), *to_top(-GAP/2, arr_y_top), "WS", "top", 10)
     arrows_top += svg_arrow(*to_top(GAP/2, arr_y_top), *to_top(GAP/2 + WG, arr_y_top), "WG", "top", 10)
@@ -210,59 +207,40 @@ def generate_exact_svg(p):
         
         <rect x="{ws_x1}" y="{ws_y1}" width="{WS*SCALE_TOP}" height="{200*SCALE_TOP}" fill="{C_ELEC}" stroke="{C_LINE}" stroke-width="1.5" />
         <polygon points="{poly_str}" fill="{C_ELEC}" stroke="{C_LINE}" stroke-width="1.5" />
-        
         {arrows_top}
     </svg>
     """
 
     # ==========================================
-    # FIGURE 2: CROSS SECTION VIEW (ZOOMED)
+    # FIGURE 2: CROSS SECTION VIEW
     # ==========================================
     
-    # 1. Define Crop Area in Microns
-    # Left Edge = Center - (WS/2 + GAP + 1.0)
-    # Right Edge = Center + (WS/2 + GAP + 1.0)
-    # Total Width in Microns:
     CROP_MARGIN = 1.0
     half_width_um = (WS/2 + GAP) + CROP_MARGIN
     total_width_um = half_width_um * 2
-    
-    # 2. Calculate Scale to fill 800px width
-    # Leave 50px margin on sides -> 700px / total_width_um
     SCALE_CS = 700.0 / total_width_um
-    
-    CY_CS = 350 # Center Y (same as top view for consistency)
+    CY_CS = 350 
     
     def to_cs(x, y): 
         return CX + x*SCALE_CS, CY_CS - y*SCALE_CS
 
     base_y_math = BOTTOM_LAYER_H
     
-    # Draw logic
-    # Substrate (Very wide, but SVG clips automatically if outside canvas? No, we rely on coordinate math)
-    # We just draw big rectangles.
-    
     _, sub_y = to_cs(0, 0)
-    sub_rect = f'<rect x="0" y="{sub_y}" width="{CV_W}" height="{CV_H}" fill="{C_SUB}" />' # Fill bottom half
+    sub_rect = f'<rect x="0" y="{sub_y}" width="{CV_W}" height="{CV_H}" fill="{C_SUB}" />'
     
-    # Black Layer
     _, bl_y = to_cs(0, BOTTOM_LAYER_H)
     bl_rect = f'<rect x="0" y="{bl_y}" width="{CV_W}" height="{BOTTOM_LAYER_H*SCALE_CS}" fill="black" />'
     
-    # Signal (WS)
     ws_x, ws_y = to_cs(-WS/2, base_y_math + MTX)
     ws_rect = f'<rect x="{ws_x}" y="{ws_y}" width="{WS*SCALE_CS}" height="{MTX*SCALE_CS}" fill="{C_ELEC}" stroke="{C_LINE}" stroke-width="1.5" />'
     
-    # Right Ground (Starts at WS/2 + GAP)
     rwg_x, rwg_y = to_cs(WS/2 + GAP, base_y_math + MTX)
-    # Draw it wide enough to go off screen
     rwg_rect = f'<rect x="{rwg_x}" y="{rwg_y}" width="{500*SCALE_CS}" height="{MTX*SCALE_CS}" fill="{C_ELEC}" stroke="{C_LINE}" stroke-width="1.5" />'
     
-    # Left Ground (Ends at -WS/2 - GAP)
     lwg_x, lwg_y = to_cs(-(WS/2 + GAP + 500), base_y_math + MTX)
     lwg_rect = f'<rect x="{lwg_x}" y="{lwg_y}" width="{500*SCALE_CS}" height="{MTX*SCALE_CS}" fill="{C_ELEC}" stroke="{C_LINE}" stroke-width="1.5" />'
     
-    # Caps & Ridges
     caps_svg = ""
     for center_x in [WS/2 + GAP/2, -WS/2 - GAP/2]:
         cx_svg, cy_svg = to_cs(center_x - CAP_W/2, base_y_math + CAP_HEIGHT)
@@ -271,25 +249,24 @@ def generate_exact_svg(p):
         rx_svg, ry_svg = to_cs(center_x - RIDGE_W/2, base_y_math + RIDGE_H)
         caps_svg += f'<rect x="{rx_svg}" y="{ry_svg}" width="{RIDGE_W*SCALE_CS}" height="{RIDGE_H*SCALE_CS}" fill="black" />'
 
-    # Arrows
     arrows_cs = ""
-    # Dim Y placed nicely above the tallest feature (MTX is 8um, CAP is 1.4um, usually MTX is taller)
     dim_y = base_y_math + max(MTX, CAP_HEIGHT) + (2.0 if MTX < 5 else 0.5 * MTX)
-    # If scale is huge, 2um might be too much vertical gap. Let's fix pixel offset.
-    # Convert pixel offset to math units? No, let's just use to_cs(y)
     
     arr_y = dim_y
-    
-    # WS Arrow
     arrows_cs += svg_arrow(*to_cs(-WS/2, arr_y), *to_cs(WS/2, arr_y), "WS", "top", 15)
-    
-    # GAP Arrow
     arrows_cs += svg_arrow(*to_cs(WS/2, arr_y), *to_cs(WS/2 + GAP, arr_y), "GAP", "top", 15)
     
-    # CAP_W Arrow (on Left Side)
     l_gap_c = -WS/2 - GAP/2
     cap_arr_y = base_y_math + CAP_HEIGHT + 0.5
     arrows_cs += svg_arrow(*to_cs(l_gap_c - CAP_W/2, cap_arr_y), *to_cs(l_gap_c + CAP_W/2, cap_arr_y), "CAP_W", "top", 15)
+    
+    # [FIX 2] Add MTX Arrow inside the Signal Electrode
+    # Arrow from y=base_y to y=base_y+MTX
+    # X position = inside WS, slightly to the right of left edge
+    mtx_x_pos = -WS/2 + 2.0 # 2um inside
+    mtx_y_start = base_y_math
+    mtx_y_end = base_y_math + MTX
+    arrows_cs += svg_arrow(*to_cs(mtx_x_pos, mtx_y_start), *to_cs(mtx_x_pos, mtx_y_end), "MTX", "right", 10)
     
     svg_cross = f"""
     <svg width="{CV_W}" height="{CV_H}" viewBox="0 0 {CV_W} {CV_H}" xmlns="http://www.w3.org/2000/svg">
