@@ -1,13 +1,14 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
+
+# --- CRITICAL FIX: Set Backend BEFORE importing pyplot ---
 import matplotlib
+matplotlib.use('Agg') # <--- This line must be here, NOT later.
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from fast_FOMs_predictor import TFLNPredictor
 
-# --- CRITICAL FIX: Set Backend to 'Agg' ---
-# This prevents Matplotlib from trying to open a GUI window, which crashes servers.
-matplotlib.use('Agg')
+from fast_FOMs_predictor import TFLNPredictor
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="TFLN Geometry Predictor", layout="wide")
@@ -75,7 +76,7 @@ def generate_plots(p):
         ax.text(mid_x + off_x, mid_y + off_y, text, ha=ha, va=va, fontsize=8, color=LINE_COLOR, zorder=21)
 
     # --- FIGURE 1: TOP-DOWN ---
-    # Explicitly create a new figure with a specific ID to avoid memory pile-up
+    # Create explicit figure objects
     fig1 = plt.figure(figsize=(6, 6))
     ax1 = fig1.add_subplot(111)
     
@@ -139,6 +140,7 @@ def generate_plots(p):
 st.subheader("1. Geometry Visualization")
 st.caption("Updates automatically as you change parameters in the sidebar.")
 
+# SAFETY CHECK: Wrap plotting in a broad try/except to prevent full app crash
 try:
     fig_top, fig_cross = generate_plots(params)
     col_v1, col_v2 = st.columns([1, 1])
@@ -146,13 +148,13 @@ try:
         st.pyplot(fig_top)
     with col_v2:
         st.pyplot(fig_cross)
-        
-    # CRITICAL: Close plots to free memory
+    
+    # Clean up memory
     plt.close(fig_top)
     plt.close(fig_cross)
     
 except Exception as e:
-    st.error(f"Error generating plot: {e}")
+    st.error(f"Plotting failed: {e}")
 
 st.markdown("---")
 
