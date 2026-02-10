@@ -16,23 +16,24 @@ st.markdown("Instant inference for **VPI, nm, Z0, and S21**.")
 st.sidebar.header("Geometry Parameters")
 
 def user_input_features():
-    # NEW PARAMETER: Device Length
+    # Global Device Parameters
     st.sidebar.subheader("Global Device Parameters")
-    length_cm = st.sidebar.number_input("Device Length (L) [cm]", value=1.0, min_value=0.1, max_value=10.0, format="%.2f")
+    length_cm = st.sidebar.number_input("Device Length (L) [cm]", value=1.0, min_value=0.1, max_value=10.0, step=0.1, format="%.2f")
     
+    # Active Region (High precision)
     st.sidebar.subheader("Active Region")
-    ws = st.sidebar.number_input("WS (Signal Width) [µm]", value=22.936, format="%.3f")
-    gap = st.sidebar.number_input("GAP [µm]", value=10.311, format="%.3f")
-    mtx = st.sidebar.number_input("MTX (Metal Thickness) [µm]", value=8.07, format="%.3f")
-    cap_w = st.sidebar.number_input("CAP_W (Cap Width) [µm]", value=1.65, format="%.3f")
+    ws = st.sidebar.number_input("WS (Signal Width) [µm]", value=22.936, step=0.001, format="%.3f")
+    gap = st.sidebar.number_input("GAP [µm]", value=10.311, step=0.001, format="%.3f")
+    mtx = st.sidebar.number_input("MTX (Metal Thickness) [µm]", value=8.07, step=0.001, format="%.3f")
+    cap_w = st.sidebar.number_input("CAP_W (Cap Width) [µm]", value=1.65, step=0.001, format="%.3f")
     
+    # T-Structure Dimensions (Fixed the 'Plus/Minus' bug here by adding step=0.1)
     st.sidebar.subheader("T-Structure Dimensions")
-    l1 = st.sidebar.number_input("L1 (Inner Length) [µm]", value=8.0, format="%.1f")
-    l2 = st.sidebar.number_input("L2 (Outer Length) [µm]", value=86.0, format="%.1f")
-    w1 = st.sidebar.number_input("W1 (Inner Width) [µm]", value=5.0, format="%.1f")
-    w2 = st.sidebar.number_input("W2 (Outer Width) [µm]", value=11.0, format="%.1f")
+    l1 = st.sidebar.number_input("L1 (Inner Length) [µm]", value=8.0, step=0.1, format="%.1f")
+    l2 = st.sidebar.number_input("L2 (Outer Length) [µm]", value=86.0, step=0.1, format="%.1f")
+    w1 = st.sidebar.number_input("W1 (Inner Width) [µm]", value=5.0, step=0.1, format="%.1f")
+    w2 = st.sidebar.number_input("W2 (Outer Width) [µm]", value=11.0, step=0.1, format="%.1f")
     
-    # We return length_cm separately
     return length_cm, [ws, gap, mtx, cap_w, l1, l2, w1, w2], {
         "WS": ws, "GAP": gap, "MTX": mtx, "CAP_W": cap_w,
         "L1": l1, "L2": l2, "W1": w1, "W2": w2
@@ -89,13 +90,12 @@ def predict_sequentially(geometry, L_cm):
             else:
                 y_std = y_std_norm[0]
             
-            # Special Handling
+            # Special Handling for VPI (Log10 + Length Rescaling)
             if safe_name == "VPI":
-                # 1. Transform Log10 -> Linear
                 real_val = 10 ** y_pred
                 real_std = real_val * np.log(10) * y_std
                 
-                # 2. Apply Length Rescaling: VPI(L) = VPI(1cm) / L
+                # Apply Length Rescaling: VPI(L) = VPI(1cm) / L
                 y_pred = real_val / L_cm
                 y_std = real_std / L_cm
             
