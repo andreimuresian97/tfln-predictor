@@ -104,12 +104,9 @@ def predict_sequentially(geometry, L_cm):
             else:
                 y_std = y_std_norm[0]
             
-            # Special Handling for VPI (Log10 + Length Rescaling)
             if safe_name == "VPI":
                 real_val = 10 ** y_pred
                 real_std = real_val * np.log(10) * y_std
-                
-                # Apply Length Rescaling: VPI(L) = VPI(1cm) / L
                 y_pred = real_val / L_cm
                 y_std = real_std / L_cm
             
@@ -133,14 +130,15 @@ def generate_exact_svg(p):
     RIDGE_W = 0.8
     RIDGE_H = 0.23
     CAP_HEIGHT = 1.4
-    C_ELEC = '#F5BD02'
-    C_SUB = '#00FFFF'
-    C_CAP = '#00FFFF'
+    C_ELEC = '#F5BD02' # Gold-ish Yellow
+    C_SUB = '#00BFFF'  # Deep Sky Blue (Matches your image)
+    C_CAP = '#00BFFF'  # Same Blue for Caps
     C_LINE = 'black'
     
-    # UNIFIED SCALE
-    GLOBAL_SCALE = 5.0
-    CX = 400
+    # FIXED CANVAS SIZE FOR BOTH IMAGES
+    CANVAS_W = 800
+    CANVAS_H = 600
+    CX = CANVAS_W / 2
     
     def svg_arrow(x1, y1, x2, y2, text, text_loc="top", offset=10, font_size=12):
         line = f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{C_LINE}" stroke-width="1" marker-start="url(#arrow_start)" marker-end="url(#arrow_end)" />'
@@ -152,12 +150,16 @@ def generate_exact_svg(p):
         elif text_loc == "bottom": ty += offset; dominant = "hanging"
         elif text_loc == "left": tx -= offset; anchor = "end"
         elif text_loc == "right": tx += offset; anchor = "start"
+        
         txt = f'<text x="{tx}" y="{ty}" fill="{C_LINE}" font-family="sans-serif" font-size="{font_size}" text-anchor="{anchor}" dominant-baseline="{dominant}">{text}</text>'
         return line + txt
 
     # --- FIGURE 1: TOP-DOWN VIEW ---
-    CY_TOP = 400 
-    def to_svg_top(x, y): return CX + x*GLOBAL_SCALE, CY_TOP - y*GLOBAL_SCALE
+    # We use a scale that fits the T-Structure into the 800x600 box
+    SCALE_TOP = 4.0 
+    CY_TOP = CANVAS_H / 2 + 50 # Centered vertically
+    
+    def to_svg_top(x, y): return CX + x*SCALE_TOP, CY_TOP - y*SCALE_TOP
 
     pts = [
         (GAP/2, -100), (GAP/2 + WG, -100), (GAP/2 + WG, 100), (GAP/2, 100),
@@ -185,84 +187,102 @@ def generate_exact_svg(p):
     arrows_svg += svg_arrow(*to_svg_top(GAP/2 + W1, w2_y), *to_svg_top(GAP/2 + W1 + W2, w2_y), "W2", "top", 10)
 
     svg_top = f"""
-    <svg width="800" height="800" viewBox="0 0 800 800" xmlns="http://www.w3.org/2000/svg">
+    <svg width="{CANVAS_W}" height="{CANVAS_H}" viewBox="0 0 {CANVAS_W} {CANVAS_H}" xmlns="http://www.w3.org/2000/svg">
         <defs>
             <marker id="arrow_end" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="black" /></marker>
             <marker id="arrow_start" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M9,0 L9,6 L0,3 z" fill="black" /></marker>
         </defs>
-        <text x="400" y="30" text-anchor="middle" font-family="sans-serif" font-size="16" font-weight="bold">Top-Down View</text>
-        <rect x="{ws_x1}" y="{ws_y1}" width="{WS*GLOBAL_SCALE}" height="{200*GLOBAL_SCALE}" fill="{C_ELEC}" stroke="{C_LINE}" />
+        <text x="{CX}" y="40" text-anchor="middle" font-family="sans-serif" font-size="20" font-weight="bold">Top-Down View</text>
+        <rect x="{ws_x1}" y="{ws_y1}" width="{WS*SCALE_TOP}" height="{200*SCALE_TOP}" fill="{C_ELEC}" stroke="{C_LINE}" />
         <polygon points="{poly_str}" fill="{C_ELEC}" stroke="{C_LINE}" />
         {arrows_svg}
     </svg>
     """
 
-    # --- FIGURE 2: CROSS SECTION (STRICTLY CROPPED) ---
-    CY_CS = 250
-    def to_svg_cs(x, y): return CX + x*GLOBAL_SCALE, CY_CS - y*GLOBAL_SCALE
+    # --- FIGURE 2: CROSS SECTION (FIXED SIZE, STRICT CROP) ---
+    # We use a much larger scale because we are zoomed in
+    SCALE_CS = 15.0 
+    CY_CS = 400 # Vertically centered in the 600px high canvas
+    
+    def to_svg_cs(x, y): return CX + x*SCALE_CS, CY_CS - y*SCALE_CS
 
-    # 1. HORIZONTAL CROP: Center -> Outer Edges + 1um
-    VIEW_EXTENSION = 1.0
-    x_limit = (WS/2 + GAP + WG) + VIEW_EXTENSION
+    # --- VIEWBOX LOGIC ---
+    # Center = 0.
+    # We want to show from Left Ground Edge + 1um to Right Ground Edge + 1um.
+    # Right Ground Edge starts at: (WS/2 + GAP)
+    # Visible part ends at: (WS/2 + GAP) + 1.0
+    VISIBLE_EXTENSION = 1.0
+    x_limit_um = (WS/2 + GAP) + VISIBLE_EXTENSION
     
-    # 2. VERTICAL CROP: Tight to the features
-    # Top of features ~ MTX (8um) + Arrows. Buffer ~ 20um (100px)
-    # Bottom of features ~ Substrate (-8um). Buffer ~ 20um (100px)
-    y_top_limit = 20.0 
-    y_bot_limit = -20.0
+    # Calculate pixel range centered on CX
+    # x_min_px = CX - (x_limit_um * SCALE_CS)
+    # x_max_px = CX + (x_limit_um * SCALE_CS)
+    # width_px = x_max_px - x_min_px
     
-    # Calculate ViewBox Coordinates
-    # x_min corresponds to the leftmost X value in SVG pixels
-    # SVG X = CX + (math_x * scale)
-    vb_x_min = CX + (-x_limit * GLOBAL_SCALE)
-    vb_width = (2 * x_limit) * GLOBAL_SCALE
+    # Since we want the image to remain 800x600, we simply draw everything relative to CX/CY
+    # and use the SVG viewBox to "crop" it to exactly the width we want.
     
-    # SVG Y = CY - (math_y * scale)
-    # Top math_y becomes the smallest SVG Y (top of box)
-    vb_y_min = CY_CS - (y_top_limit * GLOBAL_SCALE)
-    vb_height = (y_top_limit - y_bot_limit) * GLOBAL_SCALE
-
+    # ViewBox X: The starting X coordinate in the SVG canvas space
+    vb_x = CX - (x_limit_um * SCALE_CS)
+    vb_w = (x_limit_um * 2) * SCALE_CS
+    
+    # ViewBox Y: Center around the features (CY_CS)
+    # We want to show ~10um above and ~10um below
+    y_range_um = 12.0
+    vb_y = CY_CS - (y_range_um * SCALE_CS) # Top of box
+    vb_h = (y_range_um * 2) * SCALE_CS     # Height of box
+    
     base_y_math = BOTTOM_LAYER_H
-    sub_depth = max(MTX, 5)
     
-    # Draw logic (same as before, but shapes are wider than viewbox)
-    _, sub_y = to_svg_cs(-100, 0) 
-    sub_rect = f'<rect x="0" y="{sub_y}" width="800" height="{sub_depth*GLOBAL_SCALE}" fill="{C_SUB}" />'
+    # Substrate (Draw really wide/deep, crop handles visibility)
+    _, sub_y = to_svg_cs(-100, 0)
+    sub_rect = f'<rect x="-1000" y="{sub_y}" width="4000" height="2000" fill="{C_SUB}" />'
+    
+    # Black Layer
     _, bl_y = to_svg_cs(-100, BOTTOM_LAYER_H)
-    bl_rect = f'<rect x="0" y="{bl_y}" width="800" height="{BOTTOM_LAYER_H*GLOBAL_SCALE}" fill="black" />'
+    bl_rect = f'<rect x="-1000" y="{bl_y}" width="4000" height="{BOTTOM_LAYER_H*SCALE_CS}" fill="black" />'
     
+    # Electrodes
     ws_x, ws_y = to_svg_cs(-WS/2, base_y_math + MTX)
-    ws_rect = f'<rect x="{ws_x}" y="{ws_y}" width="{WS*GLOBAL_SCALE}" height="{MTX*GLOBAL_SCALE}" fill="{C_ELEC}" stroke="{C_LINE}" />'
+    ws_rect = f'<rect x="{ws_x}" y="{ws_y}" width="{WS*SCALE_CS}" height="{MTX*SCALE_CS}" fill="{C_ELEC}" stroke="{C_LINE}" />'
+    
+    # Right WG (Draw full width, ViewBox cuts it)
     rwg_x, rwg_y = to_svg_cs(WS/2 + GAP, base_y_math + MTX)
-    rwg_rect = f'<rect x="{rwg_x}" y="{rwg_y}" width="{WG*GLOBAL_SCALE}" height="{MTX*GLOBAL_SCALE}" fill="{C_ELEC}" stroke="{C_LINE}" />'
+    rwg_rect = f'<rect x="{rwg_x}" y="{rwg_y}" width="{WG*SCALE_CS}" height="{MTX*SCALE_CS}" fill="{C_ELEC}" stroke="{C_LINE}" />'
+    
+    # Left WG
     lwg_x, lwg_y = to_svg_cs(-(WS/2 + GAP + WG), base_y_math + MTX)
-    lwg_rect = f'<rect x="{lwg_x}" y="{lwg_y}" width="{WG*GLOBAL_SCALE}" height="{MTX*GLOBAL_SCALE}" fill="{C_ELEC}" stroke="{C_LINE}" />'
+    lwg_rect = f'<rect x="{lwg_x}" y="{lwg_y}" width="{WG*SCALE_CS}" height="{MTX*SCALE_CS}" fill="{C_ELEC}" stroke="{C_LINE}" />'
     
     caps_svg = ""
     for center_x in [WS/2 + GAP/2, -WS/2 - GAP/2]:
         cx_svg, cy_svg = to_svg_cs(center_x - CAP_W/2, base_y_math + CAP_HEIGHT)
-        caps_svg += f'<rect x="{cx_svg}" y="{cy_svg}" width="{CAP_W*GLOBAL_SCALE}" height="{CAP_HEIGHT*GLOBAL_SCALE}" fill="{C_CAP}" stroke="{C_LINE}" />'
+        caps_svg += f'<rect x="{cx_svg}" y="{cy_svg}" width="{CAP_W*SCALE_CS}" height="{CAP_HEIGHT*SCALE_CS}" fill="{C_CAP}" stroke="{C_LINE}" />'
         rx_svg, ry_svg = to_svg_cs(center_x - RIDGE_W/2, base_y_math + RIDGE_H)
-        caps_svg += f'<rect x="{rx_svg}" y="{ry_svg}" width="{RIDGE_W*GLOBAL_SCALE}" height="{RIDGE_H*GLOBAL_SCALE}" fill="black" />'
+        caps_svg += f'<rect x="{rx_svg}" y="{ry_svg}" width="{RIDGE_W*SCALE_CS}" height="{RIDGE_H*SCALE_CS}" fill="black" />'
 
     cs_arrows = ""
-    dim_y = base_y_math + max(MTX, CAP_HEIGHT) + 2.0
+    dim_y = base_y_math + max(MTX, CAP_HEIGHT) + 1.0
     
-    CS_FONT = 6 
+    # Font Size is adjusted relative to scale
+    CS_FONT = 12 * (SCALE_TOP / SCALE_CS) * 2 # Heuristic to match visual size
+    CS_FONT = 1.5 # In SVG units for this zoom level
     
-    cs_arrows += svg_arrow(*to_svg_cs(-WS/2, dim_y), *to_svg_cs(WS/2, dim_y), "WS", "top", 10, font_size=CS_FONT)
-    cs_arrows += svg_arrow(*to_svg_cs(WS/2, dim_y), *to_svg_cs(WS/2 + GAP, dim_y), "GAP", "top", 10, font_size=CS_FONT)
+    cs_arrows += svg_arrow(*to_svg_cs(-WS/2, dim_y), *to_svg_cs(WS/2, dim_y), "WS", "top", 1, font_size=CS_FONT)
+    cs_arrows += svg_arrow(*to_svg_cs(WS/2, dim_y), *to_svg_cs(WS/2 + GAP, dim_y), "GAP", "top", 1, font_size=CS_FONT)
+    
     l_gap_c = -WS/2 - GAP/2
-    cap_y = base_y_math + CAP_HEIGHT + 1.0
-    cs_arrows += svg_arrow(*to_svg_cs(l_gap_c - CAP_W/2, cap_y), *to_svg_cs(l_gap_c + CAP_W/2, cap_y), "CAP_W", "top", 10, font_size=CS_FONT)
+    cap_y = base_y_math + CAP_HEIGHT + 0.5
+    cs_arrows += svg_arrow(*to_svg_cs(l_gap_c - CAP_W/2, cap_y), *to_svg_cs(l_gap_c + CAP_W/2, cap_y), "CAP_W", "top", 1, font_size=CS_FONT)
     
+    # We define the SVG with fixed width/height matching TOP view (800x600)
+    # But the VIEWBOX crops it to the tiny area we care about.
     svg_cross = f"""
-    <svg width="800" height="250" viewBox="{vb_x_min} {vb_y_min} {vb_width} {vb_height}" xmlns="http://www.w3.org/2000/svg">
+    <svg width="{CANVAS_W}" height="{CANVAS_H}" viewBox="{vb_x} {vb_y} {vb_w} {vb_h}" xmlns="http://www.w3.org/2000/svg">
         <defs>
             <marker id="arrow_end" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="black" /></marker>
             <marker id="arrow_start" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M9,0 L9,6 L0,3 z" fill="black" /></marker>
         </defs>
-        <text x="{CX}" y="{vb_y_min + 15}" text-anchor="middle" font-family="sans-serif" font-size="8" font-weight="bold">Cross-Section View</text>
         {sub_rect} {bl_rect} {ws_rect} {rwg_rect} {lwg_rect} {caps_svg} {cs_arrows}
     </svg>
     """
@@ -275,7 +295,7 @@ st.caption("Updated automatically.")
 svg_t, svg_c = generate_exact_svg(params)
 
 st.markdown(render_svg(svg_t), unsafe_allow_html=True)
-st.markdown("---")
+st.markdown("**Cross-Section View** (Zoomed to Center)")
 st.markdown(render_svg(svg_c), unsafe_allow_html=True)
 
 st.markdown("---")
