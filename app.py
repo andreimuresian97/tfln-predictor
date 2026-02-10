@@ -10,7 +10,10 @@ from pathlib import Path
 st.set_page_config(page_title="TFLN Geometry Predictor", layout="centered")
 
 st.title("⚡ TFLN Performance Predictor")
-st.markdown("Instant inference for **VPI, nm, Z0, and S21**.")
+st.markdown("""
+Instant inference for **VPI, nm, Z0, and S21**.  
+**Note:** All predictions are performed at **1330 nm**.
+""")
 
 # --- SIDEBAR: INPUTS ---
 st.sidebar.header("Geometry Parameters")
@@ -27,12 +30,23 @@ def user_input_features():
     mtx = st.sidebar.number_input("MTX (Metal Thickness) [µm]", value=8.07, step=0.001, format="%.3f")
     cap_w = st.sidebar.number_input("CAP_W (Cap Width) [µm]", value=1.65, step=0.001, format="%.3f")
     
-    # T-Structure Dimensions (Fixed the 'Plus/Minus' bug here by adding step=0.1)
+    # T-Structure Dimensions
     st.sidebar.subheader("T-Structure Dimensions")
     l1 = st.sidebar.number_input("L1 (Inner Length) [µm]", value=8.0, step=0.1, format="%.1f")
     l2 = st.sidebar.number_input("L2 (Outer Length) [µm]", value=86.0, step=0.1, format="%.1f")
     w1 = st.sidebar.number_input("W1 (Inner Width) [µm]", value=5.0, step=0.1, format="%.1f")
     w2 = st.sidebar.number_input("W2 (Outer Width) [µm]", value=11.0, step=0.1, format="%.1f")
+    
+    # Fixed Parameters Report
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Fixed Parameters")
+    st.sidebar.info(
+        """
+        **Pitch:** 200 µm  
+        **WG:** 70 µm  
+        **CAP_H:** 1.4 µm
+        """
+    )
     
     return length_cm, [ws, gap, mtx, cap_w, l1, l2, w1, w2], {
         "WS": ws, "GAP": gap, "MTX": mtx, "CAP_W": cap_w,
@@ -139,7 +153,9 @@ def generate_exact_svg(p):
 
     # --- FIGURE 1: TOP-DOWN VIEW ---
     scale = 3.0
-    cx, cy = 400, 300 
+    cx = 400
+    cy = 400 # Moved down from 300 to 400 to prevent top clipping
+    
     def to_svg(x, y): return cx + x*scale, cy - y*scale
 
     pts = [
@@ -154,8 +170,10 @@ def generate_exact_svg(p):
     arrows_svg = ""
     ao = 15 
     top_y = 104
+    # WS and WG arrows (now visible because cy is lower)
     arrows_svg += svg_arrow(*to_svg(-(GAP/2 + WS), top_y), *to_svg(-GAP/2, top_y), "WS", "top", 10)
     arrows_svg += svg_arrow(*to_svg(GAP/2, top_y), *to_svg(GAP/2 + WG, top_y), "WG", "top", 10)
+    
     bot_y = -104
     arrows_svg += svg_arrow(*to_svg(-GAP/2, bot_y), *to_svg(GAP/2, bot_y), "GAP", "bottom", 10)
     l1_x = GAP/2 - 4
@@ -167,8 +185,9 @@ def generate_exact_svg(p):
     w2_y = L2/2 + 4
     arrows_svg += svg_arrow(*to_svg(GAP/2 + W1, w2_y), *to_svg(GAP/2 + W1 + W2, w2_y), "W2", "top", 10)
 
+    # Height increased to 800 to accommodate shift
     svg_top = f"""
-    <svg width="800" height="600" viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg">
+    <svg width="800" height="800" viewBox="0 0 800 800" xmlns="http://www.w3.org/2000/svg">
         <defs>
             <marker id="arrow_end" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="black" /></marker>
             <marker id="arrow_start" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M9,0 L9,6 L0,3 z" fill="black" /></marker>
