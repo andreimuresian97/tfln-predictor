@@ -138,14 +138,11 @@ def generate_exact_svg(p):
     C_CAP = '#00FFFF'
     C_LINE = 'black'
     
-    # UNIFIED SCALE FOR BOTH PLOTS
-    GLOBAL_SCALE = 5.0  # Pixels per micron (Consistent across both views)
-    
-    # Center X is shared (800px width / 2)
+    # UNIFIED SCALE
+    GLOBAL_SCALE = 5.0
     CX = 400
     
-    # Helper for Arrows
-    def svg_arrow(x1, y1, x2, y2, text, text_loc="top", offset=10):
+    def svg_arrow(x1, y1, x2, y2, text, text_loc="top", offset=10, font_size=12):
         line = f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{C_LINE}" stroke-width="1" marker-start="url(#arrow_start)" marker-end="url(#arrow_end)" />'
         mx, my = (x1 + x2)/2, (y1 + y2)/2
         tx, ty = mx, my
@@ -155,8 +152,7 @@ def generate_exact_svg(p):
         elif text_loc == "bottom": ty += offset; dominant = "hanging"
         elif text_loc == "left": tx -= offset; anchor = "end"
         elif text_loc == "right": tx += offset; anchor = "start"
-        
-        txt = f'<text x="{tx}" y="{ty}" fill="{C_LINE}" font-family="sans-serif" font-size="12" text-anchor="{anchor}" dominant-baseline="{dominant}">{text}</text>'
+        txt = f'<text x="{tx}" y="{ty}" fill="{C_LINE}" font-family="sans-serif" font-size="{font_size}" text-anchor="{anchor}" dominant-baseline="{dominant}">{text}</text>'
         return line + txt
 
     # --- FIGURE 1: TOP-DOWN VIEW ---
@@ -201,30 +197,35 @@ def generate_exact_svg(p):
     </svg>
     """
 
-    # --- FIGURE 2: CROSS SECTION (ZOOMED & CROPPED) ---
+    # --- FIGURE 2: CROSS SECTION (STRICTLY CROPPED) ---
     CY_CS = 250
     def to_svg_cs(x, y): return CX + x*GLOBAL_SCALE, CY_CS - y*GLOBAL_SCALE
 
-    # VIEW_EXTENSION LOGIC
-    # We want to show from Left WG outer edge to Right WG outer edge + 1 um buffer
+    # 1. HORIZONTAL CROP: Center -> Outer Edges + 1um
     VIEW_EXTENSION = 1.0
-    x_min = -(WS/2 + GAP + WG) - VIEW_EXTENSION
-    x_max = (WS/2 + GAP + WG) + VIEW_EXTENSION
+    x_limit = (WS/2 + GAP + WG) + VIEW_EXTENSION
     
-    # Calculate SVG ViewBox Width based on the physical width + scale
-    view_width_px = (x_max - x_min) * GLOBAL_SCALE
-    view_height_px = 300 # Fixed height for the strip
+    # 2. VERTICAL CROP: Tight to the features
+    # Top of features ~ MTX (8um) + Arrows. Buffer ~ 20um (100px)
+    # Bottom of features ~ Substrate (-8um). Buffer ~ 20um (100px)
+    y_top_limit = 20.0 
+    y_bot_limit = -20.0
     
-    # The center of the SVG is 400. We want to align our cropped view with that.
-    # But since we use absolute coordinates relative to CX=400, we just need to calculate
-    # the viewBox 'x' starting point correctly.
-    viewbox_x = CX + x_min * GLOBAL_SCALE
+    # Calculate ViewBox Coordinates
+    # x_min corresponds to the leftmost X value in SVG pixels
+    # SVG X = CX + (math_x * scale)
+    vb_x_min = CX + (-x_limit * GLOBAL_SCALE)
+    vb_width = (2 * x_limit) * GLOBAL_SCALE
     
+    # SVG Y = CY - (math_y * scale)
+    # Top math_y becomes the smallest SVG Y (top of box)
+    vb_y_min = CY_CS - (y_top_limit * GLOBAL_SCALE)
+    vb_height = (y_top_limit - y_bot_limit) * GLOBAL_SCALE
+
     base_y_math = BOTTOM_LAYER_H
     sub_depth = max(MTX, 5)
     
-    # We draw wide rectangles (width=800) to ensure they cover the view, 
-    # but the viewBox will crop them.
+    # Draw logic (same as before, but shapes are wider than viewbox)
     _, sub_y = to_svg_cs(-100, 0) 
     sub_rect = f'<rect x="0" y="{sub_y}" width="800" height="{sub_depth*GLOBAL_SCALE}" fill="{C_SUB}" />'
     _, bl_y = to_svg_cs(-100, BOTTOM_LAYER_H)
@@ -247,20 +248,21 @@ def generate_exact_svg(p):
     cs_arrows = ""
     dim_y = base_y_math + max(MTX, CAP_HEIGHT) + 2.0
     
-    # Use standard size 12 font because now scale is 1:1 with Top View
-    cs_arrows += svg_arrow(*to_svg_cs(-WS/2, dim_y), *to_svg_cs(WS/2, dim_y), "WS", "top", 10)
-    cs_arrows += svg_arrow(*to_svg_cs(WS/2, dim_y), *to_svg_cs(WS/2 + GAP, dim_y), "GAP", "top", 10)
+    CS_FONT = 6 
+    
+    cs_arrows += svg_arrow(*to_svg_cs(-WS/2, dim_y), *to_svg_cs(WS/2, dim_y), "WS", "top", 10, font_size=CS_FONT)
+    cs_arrows += svg_arrow(*to_svg_cs(WS/2, dim_y), *to_svg_cs(WS/2 + GAP, dim_y), "GAP", "top", 10, font_size=CS_FONT)
     l_gap_c = -WS/2 - GAP/2
     cap_y = base_y_math + CAP_HEIGHT + 1.0
-    cs_arrows += svg_arrow(*to_svg_cs(l_gap_c - CAP_W/2, cap_y), *to_svg_cs(l_gap_c + CAP_W/2, cap_y), "CAP_W", "top", 10)
+    cs_arrows += svg_arrow(*to_svg_cs(l_gap_c - CAP_W/2, cap_y), *to_svg_cs(l_gap_c + CAP_W/2, cap_y), "CAP_W", "top", 10, font_size=CS_FONT)
     
     svg_cross = f"""
-    <svg width="800" height="400" viewBox="{viewbox_x} 100 {view_width_px} 300" xmlns="http://www.w3.org/2000/svg">
+    <svg width="800" height="250" viewBox="{vb_x_min} {vb_y_min} {vb_width} {vb_height}" xmlns="http://www.w3.org/2000/svg">
         <defs>
             <marker id="arrow_end" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="black" /></marker>
             <marker id="arrow_start" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M9,0 L9,6 L0,3 z" fill="black" /></marker>
         </defs>
-        <text x="{CX}" y="120" text-anchor="middle" font-family="sans-serif" font-size="16" font-weight="bold">Cross-Section View</text>
+        <text x="{CX}" y="{vb_y_min + 15}" text-anchor="middle" font-family="sans-serif" font-size="8" font-weight="bold">Cross-Section View</text>
         {sub_rect} {bl_rect} {ws_rect} {rwg_rect} {lwg_rect} {caps_svg} {cs_arrows}
     </svg>
     """
@@ -280,7 +282,6 @@ st.markdown("---")
 st.subheader("2. Performance Prediction")
 
 if st.button("Predict Performance", type="primary"):
-    # Pass length_cm to the predictor
     results = predict_sequentially(geometry_list, length_cm)
     if results:
         col1, col2, col3, col4 = st.columns(4)
