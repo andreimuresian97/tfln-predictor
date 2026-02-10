@@ -16,6 +16,10 @@ st.markdown("Instant inference for **VPI, nm, Z0, and S21**.")
 st.sidebar.header("Geometry Parameters")
 
 def user_input_features():
+    # NEW PARAMETER: Device Length
+    st.sidebar.subheader("Global Device Parameters")
+    length_cm = st.sidebar.number_input("Device Length (L) [cm]", value=1.0, min_value=0.1, max_value=10.0, format="%.2f")
+    
     st.sidebar.subheader("Active Region")
     ws = st.sidebar.number_input("WS (Signal Width) [µm]", value=22.936, format="%.3f")
     gap = st.sidebar.number_input("GAP [µm]", value=10.311, format="%.3f")
@@ -28,21 +32,21 @@ def user_input_features():
     w1 = st.sidebar.number_input("W1 (Inner Width) [µm]", value=5.0, format="%.1f")
     w2 = st.sidebar.number_input("W2 (Outer Width) [µm]", value=11.0, format="%.1f")
     
-    return [ws, gap, mtx, cap_w, l1, l2, w1, w2], {
+    # We return length_cm separately
+    return length_cm, [ws, gap, mtx, cap_w, l1, l2, w1, w2], {
         "WS": ws, "GAP": gap, "MTX": mtx, "CAP_W": cap_w,
         "L1": l1, "L2": l2, "W1": w1, "W2": w2
     }
 
-geometry_list, params = user_input_features()
+length_cm, geometry_list, params = user_input_features()
 
-# --- HELPER: RENDER SVG AS IMAGE (Fixes the "Text Code" bug) ---
+# --- HELPER: RENDER SVG AS IMAGE ---
 def render_svg(svg_string):
-    """Encodes SVG code as a base64 image so Streamlit displays it correctly."""
     b64 = base64.b64encode(svg_string.encode('utf-8')).decode("utf-8")
     return f'<img src="data:image/svg+xml;base64,{b64}" width="100%"/>'
 
 # --- LOW MEMORY PREDICTOR ENGINE ---
-def predict_sequentially(geometry):
+def predict_sequentially(geometry, L_cm):
     results = {}
     model_dir = Path("gp_surrogate_results_199_8var_fixed")
     
@@ -85,11 +89,15 @@ def predict_sequentially(geometry):
             else:
                 y_std = y_std_norm[0]
             
+            # Special Handling
             if safe_name == "VPI":
+                # 1. Transform Log10 -> Linear
                 real_val = 10 ** y_pred
                 real_std = real_val * np.log(10) * y_std
-                y_pred = real_val
-                y_std = real_std
+                
+                # 2. Apply Length Rescaling: VPI(L) = VPI(1cm) / L
+                y_pred = real_val / L_cm
+                y_std = real_std / L_cm
             
             results[safe_name] = {'value': y_pred, 'lower_bound': y_pred - 1.96 * y_std, 'upper_bound': y_pred + 1.96 * y_std}
 
@@ -224,7 +232,6 @@ st.caption("Updated automatically.")
 
 svg_t, svg_c = generate_exact_svg(params)
 
-# USE THE RENDER FUNCTION HERE
 st.markdown(render_svg(svg_t), unsafe_allow_html=True)
 st.markdown("---")
 st.markdown(render_svg(svg_c), unsafe_allow_html=True)
@@ -233,7 +240,8 @@ st.markdown("---")
 st.subheader("2. Performance Prediction")
 
 if st.button("Predict Performance", type="primary"):
-    results = predict_sequentially(geometry_list)
+    # Pass length_cm to the predictor
+    results = predict_sequentially(geometry_list, length_cm)
     if results:
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("VPI", f"{results['VPI']['value']:.2f} V")
