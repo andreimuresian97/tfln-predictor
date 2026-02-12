@@ -4,9 +4,8 @@ import numpy as np
 import pickle
 import os
 import gc
+import base64
 from scipy.optimize import minimize
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 from torch.quasirandom import SobolEngine
 import torch
 import warnings
@@ -78,15 +77,12 @@ def load_scalers():
 
 def load_single_model(name, scalers):
     """Load one model, use it, and return the model object."""
-    # Map friendly name to file name
     file_map = {
         'VPI': 'gp_model_VPI.pkl',
         'nm':  'gp_model_nm.pkl',
         'Z0':  'gp_model_Z0.pkl',
         'S21': 'gp_model_S21.pkl'
     }
-    
-    # Map friendly name to Scaler key
     scaler_key_map = {
         'VPI': 'VPI (duty cycle)',
         'nm':  'nm',
@@ -113,7 +109,6 @@ def predict_batch_memory_safe(X_norm, scalers):
     preds = {}
     model_names = ['VPI', 'nm', 'Z0', 'S21']
     
-    # Progress bar for prediction phase
     prog_bar = st.progress(0, text="Predicting...")
     
     for i, name in enumerate(model_names):
@@ -132,13 +127,10 @@ def predict_batch_memory_safe(X_norm, scalers):
             
         if name == 'VPI':
             mean_phys = 10 ** mean_phys
-            # Approximate uncertainty for 10^x
-            # sigma_y = y * ln(10) * sigma_x
             std_phys = mean_phys * np.log(10) * std_phys
             
         preds[name] = {'mean': mean_phys, 'std': std_phys}
         
-        # DELETE MODEL FROM MEMORY
         del model
         gc.collect()
         
@@ -148,7 +140,174 @@ def predict_batch_memory_safe(X_norm, scalers):
     return preds
 
 # ==========================================
-# 4. OPTIMIZATION LOGIC
+# 4. VISUALIZATION ENGINE (FROM APP.PY)
+# ==========================================
+
+def render_svg(svg_string):
+    """Renders SVG string in Streamlit"""
+    b64 = base64.b64encode(svg_string.encode('utf-8')).decode("utf-8")
+    return f'<img src="data:image/svg+xml;base64,{b64}" width="100%"/>'
+
+def generate_exact_svg(p):
+    """
+    Generates exact SVG strings for Top-Down and Cross-Section views.
+    Expects dictionary p with keys: WS, GAP, MTX, CAP_W, L1, L2, W1, W2
+    """
+    W1, W2, L1, L2 = p["W1"], p["W2"], p["L1"], p["L2"]
+    WS, GAP, MTX, CAP_W = p["WS"], p["GAP"], p["MTX"], p["CAP_W"]
+    WG = 70.0
+    BOTTOM_LAYER_H = 0.23
+    RIDGE_W = 0.8
+    RIDGE_H = 0.23
+    CAP_HEIGHT = 1.4
+    C_ELEC = '#F5BD02' # Gold
+    C_SUB = '#00BFFF'  # Deep Sky Blue
+    C_CAP = '#00BFFF'
+    C_LINE = 'black'
+    
+    # === GLOBAL CANVAS SETTINGS ===
+    CV_W = 800
+    CV_H = 600
+    CX = CV_W / 2
+    
+    def svg_arrow(x1, y1, x2, y2, text, text_loc="top", offset=10, font_size=14):
+        line = f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{C_LINE}" stroke-width="1.5" marker-start="url(#arrow_start)" marker-end="url(#arrow_end)" />'
+        mx, my = (x1 + x2)/2, (y1 + y2)/2
+        tx, ty = mx, my
+        anchor = "middle"
+        dominant = "middle"
+        if text_loc == "top": ty -= offset; dominant = "auto"
+        elif text_loc == "bottom": ty += offset; dominant = "hanging"
+        elif text_loc == "left": tx -= offset; anchor = "end"
+        elif text_loc == "right": tx += offset; anchor = "start"
+        
+        txt = f'<text x="{tx}" y="{ty}" fill="{C_LINE}" font-family="sans-serif" font-size="{font_size}" font-weight="bold" text-anchor="{anchor}" dominant-baseline="{dominant}">{text}</text>'
+        return line + txt
+
+    # ==========================================
+    # FIGURE 1: TOP-DOWN VIEW
+    # ==========================================
+    
+    SCALE_TOP = 3.5 
+    CV_H_TOP = 700 
+    CY_TOP = 380 
+    
+    def to_top(x, y): 
+        return CX + x*SCALE_TOP, CY_TOP - y*SCALE_TOP
+
+    # Polygons
+    pts = [
+        (GAP/2, -100), (GAP/2 + WG, -100), (GAP/2 + WG, 100), (GAP/2, 100),
+        (GAP/2, L1/2), (GAP/2 + W1, L1/2), (GAP/2 + W1, L2/2),
+        (GAP/2 + W1 + W2, L2/2), (GAP/2 + W1 + W2, -L2/2),
+        (GAP/2 + W1, -L2/2), (GAP/2 + W1, -L1/2), (GAP/2, -L1/2)
+    ]
+    poly_str = " ".join([f"{to_top(x,y)[0]},{to_top(x,y)[1]}" for x, y in pts])
+    ws_x1, ws_y1 = to_top(-(GAP/2 + WS), 100)
+    
+    # Arrows
+    arrows_top = ""
+    top_arrow_y = 120 
+    bot_arrow_y = -120 
+    side_arrow_offset = 20
+    
+    arrows_top += svg_arrow(*to_top(-(GAP/2 + WS), top_arrow_y), *to_top(-GAP/2, top_arrow_y), "WS", "top", 10)
+    arrows_top += svg_arrow(*to_top(GAP/2, top_arrow_y), *to_top(GAP/2 + WG, top_arrow_y), "WG", "top", 10)
+    arrows_top += svg_arrow(*to_top(-GAP/2, bot_arrow_y), *to_top(GAP/2, bot_arrow_y), "GAP", "bottom", 10)
+    
+    l1_x = GAP/2 - side_arrow_offset
+    arrows_top += svg_arrow(*to_top(l1_x, -L1/2), *to_top(l1_x, L1/2), "L1", "left", 10)
+    l2_x = GAP/2 + W1 + W2 + side_arrow_offset
+    arrows_top += svg_arrow(*to_top(l2_x, -L2/2), *to_top(l2_x, L2/2), "L2", "right", 10)
+    
+    w_arrows_y_top = L2/2 + side_arrow_offset
+    w_arrows_y_bot = -L1/2 - side_arrow_offset
+    arrows_top += svg_arrow(*to_top(GAP/2, w_arrows_y_bot), *to_top(GAP/2 + W1, w_arrows_y_bot), "W1", "bottom", 10)
+    arrows_top += svg_arrow(*to_top(GAP/2 + W1, w_arrows_y_top), *to_top(GAP/2 + W1 + W2, w_arrows_y_top), "W2", "top", 10)
+
+    svg_top = f"""
+    <svg width="{CV_W}" height="{CV_H_TOP}" viewBox="0 0 {CV_W} {CV_H_TOP}" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+            <marker id="arrow_end" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="black" /></marker>
+            <marker id="arrow_start" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M9,0 L9,6 L0,3 z" fill="black" /></marker>
+        </defs>
+        <text x="20" y="50" text-anchor="start" font-family="sans-serif" font-size="24" font-weight="bold">Top-Down View</text>
+        
+        <rect x="{ws_x1}" y="{ws_y1}" width="{WS*SCALE_TOP}" height="{200*SCALE_TOP}" fill="{C_ELEC}" stroke="{C_LINE}" stroke-width="1.5" />
+        <polygon points="{poly_str}" fill="{C_ELEC}" stroke="{C_LINE}" stroke-width="1.5" />
+        {arrows_top}
+    </svg>
+    """
+
+    # ==========================================
+    # FIGURE 2: CROSS SECTION VIEW (ZOOMED)
+    # ==========================================
+    
+    CROP_MARGIN = 1.0
+    half_width_um = (WS/2 + GAP) + CROP_MARGIN
+    total_width_um = half_width_um * 2
+    SCALE_CS = 700.0 / total_width_um
+    CY_CS = 350 
+    
+    def to_cs(x, y): 
+        return CX + x*SCALE_CS, CY_CS - y*SCALE_CS
+
+    base_y_math = BOTTOM_LAYER_H
+    
+    _, sub_y = to_cs(0, 0)
+    sub_rect = f'<rect x="0" y="{sub_y}" width="{CV_W}" height="{CV_H}" fill="{C_SUB}" />'
+    
+    _, bl_y = to_cs(0, BOTTOM_LAYER_H)
+    bl_rect = f'<rect x="0" y="{bl_y}" width="{CV_W}" height="{BOTTOM_LAYER_H*SCALE_CS}" fill="black" />'
+    
+    ws_x, ws_y = to_cs(-WS/2, base_y_math + MTX)
+    ws_rect = f'<rect x="{ws_x}" y="{ws_y}" width="{WS*SCALE_CS}" height="{MTX*SCALE_CS}" fill="{C_ELEC}" stroke="{C_LINE}" stroke-width="1.5" />'
+    
+    rwg_x, rwg_y = to_cs(WS/2 + GAP, base_y_math + MTX)
+    rwg_rect = f'<rect x="{rwg_x}" y="{rwg_y}" width="{500*SCALE_CS}" height="{MTX*SCALE_CS}" fill="{C_ELEC}" stroke="{C_LINE}" stroke-width="1.5" />'
+    
+    lwg_x, lwg_y = to_cs(-(WS/2 + GAP + 500), base_y_math + MTX)
+    lwg_rect = f'<rect x="{lwg_x}" y="{lwg_y}" width="{500*SCALE_CS}" height="{MTX*SCALE_CS}" fill="{C_ELEC}" stroke="{C_LINE}" stroke-width="1.5" />'
+    
+    caps_svg = ""
+    for center_x in [WS/2 + GAP/2, -WS/2 - GAP/2]:
+        cx_svg, cy_svg = to_cs(center_x - CAP_W/2, base_y_math + CAP_HEIGHT)
+        caps_svg += f'<rect x="{cx_svg}" y="{cy_svg}" width="{CAP_W*SCALE_CS}" height="{CAP_HEIGHT*SCALE_CS}" fill="{C_CAP}" stroke="{C_LINE}" stroke-width="1.5" />'
+        
+        rx_svg, ry_svg = to_cs(center_x - RIDGE_W/2, base_y_math + RIDGE_H)
+        caps_svg += f'<rect x="{rx_svg}" y="{ry_svg}" width="{RIDGE_W*SCALE_CS}" height="{RIDGE_H*SCALE_CS}" fill="black" />'
+
+    arrows_cs = ""
+    dim_y = base_y_math + max(MTX, CAP_HEIGHT) + (3.0 if MTX < 5 else 0.5 * MTX)
+    
+    arr_y = dim_y
+    arrows_cs += svg_arrow(*to_cs(-WS/2, arr_y), *to_cs(WS/2, arr_y), "WS", "top", 15)
+    arrows_cs += svg_arrow(*to_cs(WS/2, arr_y), *to_cs(WS/2 + GAP, arr_y), "GAP", "top", 15)
+    
+    l_gap_c = -WS/2 - GAP/2
+    cap_arr_y = base_y_math + CAP_HEIGHT + 1.0
+    arrows_cs += svg_arrow(*to_cs(l_gap_c - CAP_W/2, cap_arr_y), *to_cs(l_gap_c + CAP_W/2, cap_arr_y), "CAP_W", "top", 15)
+    
+    mtx_x_pos = -WS/2 + 2.0 
+    mtx_y_start = base_y_math
+    mtx_y_end = base_y_math + MTX
+    arrows_cs += svg_arrow(*to_cs(mtx_x_pos, mtx_y_start), *to_cs(mtx_x_pos, mtx_y_end), "MTX", "right", 10)
+    
+    svg_cross = f"""
+    <svg width="{CV_W}" height="{CV_H}" viewBox="0 0 {CV_W} {CV_H}" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+            <marker id="arrow_end" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="black" /></marker>
+            <marker id="arrow_start" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M9,0 L9,6 L0,3 z" fill="black" /></marker>
+        </defs>
+        <text x="20" y="50" text-anchor="start" font-family="sans-serif" font-size="24" font-weight="bold">Cross-Section View</text>
+        
+        {sub_rect} {bl_rect} {ws_rect} {rwg_rect} {lwg_rect} {caps_svg} {arrows_cs}
+    </svg>
+    """
+    return svg_top, svg_cross
+
+# ==========================================
+# 5. OPTIMIZATION LOGIC
 # ==========================================
 
 def run_optimization():
@@ -168,8 +327,6 @@ def run_optimization():
         X_phys_np = X_phys.numpy()
         
         # 2. Geometric Filtering
-        # CAP_W < GAP - 1
-        # W1 + W2 < 65
         gap_col = 1; cap_col = 3; w1_col = 6; w2_col = 7
         mask_geom = (X_phys_np[:, cap_col] < (X_phys_np[:, gap_col] - 1.0)) & \
                     ((X_phys_np[:, w1_col] + X_phys_np[:, w2_col]) < 65.0)
@@ -197,7 +354,7 @@ def run_optimization():
     valid_indices = np.where(mask_perf)[0]
     
     if len(valid_indices) == 0:
-        st.warning(f"No designs met the constraints (Vpi<{const_vpi}, S21>{const_s21}, nm≈{const_nm_target}). Try relaxing them.")
+        st.warning(f"No designs met constraints. Try relaxing them.")
         return
 
     # 5. Select Discrete Winner
@@ -216,7 +373,6 @@ def run_optimization():
 def perform_polishing(x0, scalers):
     st.info("🛠 Polishing geometry for maximum Z0...")
     
-    # Load all models for Scipy (Fits in RAM since we don't store big arrays)
     models = {}
     model_names = ['VPI', 'nm', 'Z0', 'S21']
     for name in model_names:
@@ -247,71 +403,19 @@ def perform_polishing(x0, scalers):
         {'type': 'ineq', 'fun': lambda x: 65.0 - (x[6] + x[7])} # W < 65
     ]
     
-    # Run Optimization
     res = minimize(obj, x0, method='SLSQP', bounds=BOUNDS_LIST, constraints=cons)
     
     final_x = res.x
     final_preds = predict_one(final_x)
     
-    # Save to Session State to display
+    # Save to Session State
     st.session_state['result'] = {
         'x': final_x,
         'preds': final_preds
     }
     
-    # Cleanup
     del models
     gc.collect()
-
-# ==========================================
-# 5. VISUALIZATION
-# ==========================================
-def plot_geometry(x):
-    WS, GAP, MTX, CAP_W, L1, L2, W1, W2 = x
-    
-    # Color Scheme matching your style
-    ELECTRODE_COLOR = '#F5BD02' 
-    SUBSTRATE_COLOR = '#00FFFF' 
-    CAP_COLOR = '#00FFFF'       
-    LINE_COLOR = 'black'
-    
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-    
-    # --- TOP VIEW (Simplified) ---
-    ax1.set_title("Top View (Optimized)", fontsize=14)
-    # Left Electrode (WS)
-    ax1.add_patch(patches.Rectangle((-WS - GAP/2, -50), WS, 100, fc=ELECTRODE_COLOR, ec=LINE_COLOR))
-    # Right Electrode (WG) - Just showing the gap edge
-    ax1.add_patch(patches.Rectangle((GAP/2, -50), 30, 100, fc=ELECTRODE_COLOR, ec=LINE_COLOR))
-    # Annotations
-    ax1.text(0, 0, f"Gap\n{GAP:.2f}", ha='center', va='center')
-    ax1.text(-WS/2 - GAP/2, 0, f"WS\n{WS:.2f}", ha='center', va='center')
-    ax1.set_xlim(-WS - GAP - 10, GAP + 40)
-    ax1.set_ylim(-60, 60)
-    ax1.axis('off')
-
-    # --- CROSS SECTION ---
-    ax2.set_title("Cross Section", fontsize=14)
-    # Substrate
-    ax2.add_patch(patches.Rectangle((-50, -5), 100, 5, fc=SUBSTRATE_COLOR))
-    # Black base layer
-    ax2.add_patch(patches.Rectangle((-50, 0), 100, 0.23, fc='black'))
-    
-    # Electrodes
-    ax2.add_patch(patches.Rectangle((-WS/2, 0.23), WS, MTX, fc=ELECTRODE_COLOR, ec=LINE_COLOR)) # WS
-    ax2.add_patch(patches.Rectangle((WS/2 + GAP, 0.23), 20, MTX, fc=ELECTRODE_COLOR, ec=LINE_COLOR)) # Right WG
-    ax2.add_patch(patches.Rectangle((-WS/2 - GAP - 20, 0.23), 20, MTX, fc=ELECTRODE_COLOR, ec=LINE_COLOR)) # Left WG
-    
-    # Caps
-    ax2.add_patch(patches.Rectangle((WS/2 + GAP/2 - CAP_W/2, 0.23), CAP_W, 1.4, fc=CAP_COLOR, ec=LINE_COLOR))
-    ax2.add_patch(patches.Rectangle((-WS/2 - GAP/2 - CAP_W/2, 0.23), CAP_W, 1.4, fc=CAP_COLOR, ec=LINE_COLOR))
-    
-    ax2.set_xlim(-WS - GAP - 10, WS + GAP + 10)
-    ax2.set_ylim(-2, max(MTX, 2) + 5)
-    ax2.set_aspect('equal')
-    ax2.axis('off')
-    
-    return fig
 
 # ==========================================
 # 6. MAIN UI EXECUTION
@@ -327,17 +431,24 @@ if 'result' in st.session_state:
     st.markdown("---")
     st.header("🏆 Optimal Geometry Found")
     
-    # Metrics Row
+    # Metrics
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Z0 (Impedance)", f"{preds['Z0']:.2f} Ω", delta="Maximize")
     c2.metric("S21 (Loss)", f"{preds['S21']:.2f} dB", delta_color="normal")
     c3.metric("Vpi·L", f"{preds['VPI']:.2f} V·cm", delta_color="inverse")
     c4.metric("Index (nm)", f"{preds['nm']:.4f}", help="Target: 2.27")
     
-    # Plot
-    st.pyplot(plot_geometry(res['x']))
-    
-    # Parameter Table
+    # Params
     st.subheader("Optimal Parameters")
     df_params = pd.DataFrame([res['x']], columns=VAR_NAMES)
     st.table(df_params.style.format("{:.3f}"))
+    
+    # SVG Plotting
+    # Convert array to dictionary for the SVG function
+    p_dict = {name: val for name, val in zip(VAR_NAMES, res['x'])}
+    
+    svg_t, svg_c = generate_exact_svg(p_dict)
+    
+    st.markdown("### Visualization")
+    st.markdown(render_svg(svg_t), unsafe_allow_html=True)
+    st.markdown(render_svg(svg_c), unsafe_allow_html=True)
