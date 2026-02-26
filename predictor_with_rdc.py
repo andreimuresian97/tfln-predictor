@@ -186,7 +186,9 @@ def predict_sequentially(geometry, L_cm, R_L):
             'upper_bound': vpi_lab_high,
             'ideal_chip_vpi': vpi_ideal_chip,
             'total_chip_ohms': rdc_total,
-            'pf': pf
+            'pf': pf,
+            'pf_lower': pf_low,   # <-- This fixes the KeyError
+            'pf_upper': pf_high   # <-- This fixes the KeyError
         }
 
     return results
