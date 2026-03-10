@@ -19,17 +19,18 @@ st.markdown("""
 Welcome to the TFLN internal design platform. This suite replaces computationally expensive 
 3D electromagnetic simulations (CST) with high-speed, machine-learning-driven surrogate models. 
 
-By leveraging Gaussian Process regression, this tool enables instant performance inference and 
-global geometric optimization, drastically reducing design cycles.
+By leveraging Gaussian Process regression, this tool enables instant performance inference, 
+global geometric optimization, and inverse design, drastically reducing engineering cycles.
 
 ### 🧰 Available Modules
 Please select a tool from the sidebar on the left to begin:
 """)
 
-# --- MODULE DESCRIPTIONS ---
-col1, col2, col3 = st.columns(3)
+# --- MODULE DESCRIPTIONS (2x2 Grid) ---
+row1_col1, row1_col2 = st.columns(2)
+row2_col1, row2_col2 = st.columns(2)
 
-with col1:
+with row1_col1:
     st.subheader("🔮 Predictor")
     st.markdown("""
     **Instant Inference.** Input T-rail geometry parameters to instantly predict the fundamental Figures of Merit: 
@@ -38,17 +39,26 @@ with col1:
     * Effective Index ($n_m$)
     """)
 
-with col2:
+with row1_col2:
     st.subheader("🎯 Optimizer")
     st.markdown("""
     **Global Search.** Define your physical constraints and let the algorithm sweep millions of design combinations to 
     recommend the absolute optimal geometry for peak device performance.
     """)
 
-with col3:
+# Adds a bit of vertical spacing between the rows
+st.write("") 
+
+with row2_col1:
+    st.subheader("🔍 Inverse Designer")
+    st.markdown("""
+    **Goal-Seeking Engine.** Input your exact target FOMs and allowable tolerances. The model will scan the entire design space to back-calculate the specific physical geometries required to achieve your desired physics.
+    """)
+
+with row2_col2:
     st.subheader("📈 Plotter")
     st.markdown("""
-    **Visual Analytics.** Generate parametric sweeps and trade-off curves to visualize how sensitive the modulator's 
+    **Visual Analytics.** Generate interactive parametric sweeps and trade-off curves to visualize how sensitive the modulator's 
     performance is to specific manufacturing tolerances and geometric shifts.
     """)
 
