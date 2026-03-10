@@ -23,15 +23,17 @@ By leveraging Gaussian Process regression, this tool enables instant performance
 global geometric optimization, and inverse design, drastically reducing engineering cycles.
 
 ### 🧰 Available Modules
-Please select a tool from the sidebar on the left to begin:
+Click on any module below (or use the sidebar) to begin:
 """)
+st.write("") # Little bit of spacing
 
 # --- MODULE DESCRIPTIONS (2x2 Grid) ---
 row1_col1, row1_col2 = st.columns(2)
 row2_col1, row2_col2 = st.columns(2)
 
 with row1_col1:
-    st.subheader("🔮 Predictor")
+    # THIS PATH MUST EXACTLY MATCH YOUR FILE NAME
+    st.page_link("pages/1_🔮_Predictor.py", label="**🔮 Predictor**", icon="▶️")
     st.markdown("""
     **Instant Inference.** Input T-rail geometry parameters to instantly predict the fundamental Figures of Merit: 
     * Half-wave Voltage ($V_\pi$)
@@ -40,23 +42,22 @@ with row1_col1:
     """)
 
 with row1_col2:
-    st.subheader("🎯 Optimizer")
+    st.page_link("pages/2_🎯_Optimizer.py", label="**🎯 Optimizer**", icon="▶️")
     st.markdown("""
     **Global Search.** Define your physical constraints and let the algorithm sweep millions of design combinations to 
     recommend the absolute optimal geometry for peak device performance.
     """)
 
-# Adds a bit of vertical spacing between the rows
 st.write("") 
 
 with row2_col1:
-    st.subheader("🔍 Inverse Designer")
+    st.page_link("pages/3_🔍_Inverse_Designer.py", label="**🔍 Inverse Designer**", icon="▶️")
     st.markdown("""
     **Goal-Seeking Engine.** Input your exact target FOMs and allowable tolerances. The model will scan the entire design space to back-calculate the specific physical geometries required to achieve your desired physics.
     """)
 
 with row2_col2:
-    st.subheader("📈 Plotter")
+    st.page_link("pages/4_📈_Curves_Plotter.py", label="**📈 Plotter**", icon="▶️")
     st.markdown("""
     **Visual Analytics.** Generate interactive parametric sweeps and trade-off curves to visualize how sensitive the modulator's 
     performance is to specific manufacturing tolerances and geometric shifts.
