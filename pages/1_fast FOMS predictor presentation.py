@@ -6,8 +6,7 @@ import gc
 import base64
 from pathlib import Path
 
-# --- PAGE CONFIG ---
-st.set_page_config(page_title="TFLN Geometry Predictor", layout="centered")
+# Note: st.set_page_config is removed here because it is handled by the main app.py
 
 st.title("⚡ TFLN Performance Predictor")
 st.markdown("""
@@ -266,12 +265,12 @@ def generate_exact_svg(p):
     mtx_y_end = base_y_math + MTX
     arrows_cs += svg_arrow(*to_cs(mtx_x_pos, mtx_y_start), *to_cs(mtx_x_pos, mtx_y_end), "MTX", "right", 10)
     
-    # [FIX] Title moved to Left (x=20) and anchor=start for consistency
+    # [FIX] Title moved to Left (x=20) and anchor=start for consistency. TYPO FIXED HERE.
     svg_cross = f"""
     <svg width="{CV_W}" height="{CV_H}" viewBox="0 0 {CV_W} {CV_H}" xmlns="http://www.w3.org/2000/svg">
         <defs>
             <marker id="arrow_end" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="black" /></marker>
-            <marker id="arrow_start" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto" marker,Units="strokeWidth"><path d="M9,0 L9,6 L0,3 z" fill="black" /></marker>
+            <marker id="arrow_start" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M9,0 L9,6 L0,3 z" fill="black" /></marker>
         </defs>
         <text x="20" y="50" text-anchor="start" font-family="sans-serif" font-size="24" font-weight="bold">Cross-Section View</text>
         
