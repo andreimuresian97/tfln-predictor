@@ -8,7 +8,30 @@ st.set_page_config(
     layout="centered",
     initial_sidebar_state="expanded"
 )
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    # 1. Check if they already logged in during this session
+    if "password_correct" not in st.session_state:
+        st.session_state["password_correct"] = False
 
+    if not st.session_state["password_correct"]:
+        # 2. Show the password input box
+        st.warning("🔒 Please enter the password to access the TFLN Dashboard.")
+        password = st.text_input("Password", type="password")
+        
+        if password:
+            # 3. Check against the secret password
+            if password == st.secrets["app_password"]:
+                st.session_state["password_correct"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect password.")
+        return False
+    return True
+
+# If the password is wrong, stop the script entirely
+if not check_password():
+    st.stop()
 # --- CUSTOM CSS FOR LARGER LINKS ---
 # This forces the st.page_link text to act like a subheader
 st.markdown("""
