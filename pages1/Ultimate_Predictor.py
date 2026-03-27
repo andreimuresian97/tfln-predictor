@@ -317,11 +317,10 @@ if st.button("🚀 Predict Performance", type="primary"):
         
         st.markdown("---")
         
-        # Top Row Metrics 
-
-
+       # Top Row Metrics 
         col1, col2, col3 = st.columns(3)
-        col1.metric("EO Bandwidth", f"{res['bw']:.1f} GHz")
+        # Fix: Use res['bw'][0] for the nominal bandwidth
+        col1.metric("EO Bandwidth", f"{res['bw'][0]:.1f} GHz")
         col2.metric("Impedance (Zc)", f"{res['zc'][0]:.1f} Ω")
         col3.metric("Index (nm)", f"{res['nm'][0]:.4f}")
         
@@ -330,8 +329,8 @@ if st.button("🚀 Predict Performance", type="primary"):
         
         # Hardcoded Global MAEs from your cross-validation
         mae_nm = 0.0264
-        mae_zc = 0.7726   # <-- Put your actual Zc MAE here
-        mae_vpi = 0.0130  # <-- Put your actual Vpi MAE here
+        mae_zc = 1.0     # <-- Put your actual Zc MAE here
+        mae_vpi = 0.045  # <-- Put your actual Vpi MAE here
         
         data = [
             [
@@ -365,7 +364,7 @@ if st.button("🚀 Predict Performance", type="primary"):
                 "N/A (Derived)"
             ],
             [
-                "VPI @ 60 GHz (Full RF Attenuation Physics) [V]", 
+                "VPI @ 60 GHz (Full RF Attenuation) [V]", 
                 f"{res['vpi_lossy'][0]:.3f}", 
                 f"[{res['vpi_lossy'][0]-1.96*res['vpi_lossy'][1]:.3f}, {res['vpi_lossy'][0]+1.96*res['vpi_lossy'][1]:.3f}]",
                 "N/A (Derived)"
@@ -378,9 +377,12 @@ if st.button("🚀 Predict Performance", type="primary"):
         fig, ax = plt.subplots(figsize=(8, 4))
         ax.plot(res['f_axis'], res['s21'], 'b-', lw=2.5, label=f'EO Response (L={length_cm*10} mm, Rt={Rt} Ω)')
         ax.axhline(-3, color='r', linestyle='--', lw=2)
-        if res['bw'] < 150.0:
-            ax.plot(res['bw'], -3, 'ko', markersize=8)
-            ax.annotate(f"{res['bw']:.1f} GHz", (res['bw'] + 3, -1.5), fontsize=12, fontweight='bold')
+        
+        # Fix: Use res['bw'][0] for all plotting logic
+        if res['bw'][0] < 150.0:
+            ax.plot(res['bw'][0], -3, 'ko', markersize=8)
+            ax.annotate(f"{res['bw'][0]:.1f} GHz", (res['bw'][0] + 3, -1.5), fontsize=12, fontweight='bold')
+            
         ax.set_xlabel('Frequency (GHz)')
         ax.set_ylabel('Normalized S21 (dB)')
         ax.set_ylim(-8, 1)
