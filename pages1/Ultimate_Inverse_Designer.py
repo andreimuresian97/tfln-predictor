@@ -379,7 +379,7 @@ if 'inv_res' in st.session_state:
             with c_svg2: st.markdown(render_svg(svg_c), unsafe_allow_html=True)
             
             st.markdown("### 📊 Predicted FOMs (with 95% CI & MAE)")
-            m_nm, m_zc, m_vpi, m_a = 0.0264, 1.0, 0.045, 0.15 
+            m_nm, m_zc, m_vpi, m_a = 0.0264, 0.7726, 0.0130, 0.15 
             data = [
                 ["Microwave Index (nm)", f"{res['nm'][0]:.4f}", f"[{res['nm'][0]-1.96*res['nm'][1]:.4f}, {res['nm'][0]+1.96*res['nm'][1]:.4f}]", f"± {m_nm:.4f}"],
                 ["Impedance Zc [Ω]", f"{res['zc'][0]:.1f}", f"[{res['zc'][0]-1.96*res['zc'][1]:.1f}, {res['zc'][0]+1.96*res['zc'][1]:.1f}]", f"± {m_zc:.2f}"],
