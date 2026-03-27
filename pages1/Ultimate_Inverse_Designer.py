@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.optimize import curve_fit
+from scipy.optimize import curve_fit, minimize as scipy_minimize
 import pickle
 import os
 import gc
@@ -21,7 +21,7 @@ st.title("🔍 Ultimate Inverse Synthesizer")
 st.markdown("""
 **Goal-Seeking Engine.** Input your exact target broadband FOMs and tolerances. 
 The hybrid GP-Physics engine floods the 10-DOF space using a Quasi-Monte Carlo Sobol sequence, 
-scores candidates using Weighted Euclidean Distance, and back-calculates the absolute best physical compromises.
+then uses an **SLSQP Gradient Polisher** to mathematically slide the best candidates perfectly into your targets.
 """)
 
 # ==========================================
@@ -63,7 +63,7 @@ VAR_NAMES = ['WS', 'GAP', 'MTX', 'CAP_W', 'L1', 'L2', 'W1', 'W2', 'L_dev', 'Rt']
 BOUNDS = [b_WS, b_GAP, b_MTX, b_CAPW, b_L1, b_L2, b_W1, b_W2, b_L, b_Rt]
 
 # ==========================================
-# 3. PHYSICS & BATCH ENGINE
+# 3. CACHED PHYSICS ENGINE
 # ==========================================
 MODEL_DIR = Path("gp_surrogate_results_ultimate")
 
@@ -89,75 +89,117 @@ def calc_eo(f_GHz, alpha, nm, Zc, L_m, ng=2.27, Zs=50.0, Rt=42.0):
     idx_1G = np.argmin(np.abs(f_GHz - 1.0))
     return 20 * np.log10(np.abs(s21_abs) / np.abs(s21_abs[idx_1G])), s21_abs / (zin / (Zs + zin))
 
-def get_detailed_predictions(geom_um, L_mm, Rt):
-    ws, gap, mtx, cap, l1, l2, w1, w2 = np.array(geom_um) / 1000.0
-    bp = (l1 + w1 + l2 + w2) * (ws / gap)
-    x8 = np.array([[cap, gap, l1, l2, mtx, w1, w2, ws]])
-    x9 = np.array([[cap, gap, l1, l2, mtx, w1, w2, ws, bp]])
+class FastPredictor:
+    def __init__(self):
+        with open(MODEL_DIR/"gp_vpi_surrogate/scalers_VPI.pkl", 'rb') as f: self.v_s = pickle.load(f)
+        with open(MODEL_DIR/"gp_vpi_surrogate/gp_model_VPI.pkl", 'rb') as f: self.v_m = pickle.load(f)
+        with open(MODEL_DIR/"gp_nm_zc_surrogate/scalers_nm_zc.pkl", 'rb') as f: self.nz_s = pickle.load(f)
+        with open(MODEL_DIR/"gp_nm_zc_surrogate/gp_model_nm_60.pkl", 'rb') as f: self.n_m = pickle.load(f)
+        with open(MODEL_DIR/"gp_nm_zc_surrogate/gp_model_Zc_60.pkl", 'rb') as f: self.z_m = pickle.load(f)
+        with open(MODEL_DIR/"gp_alpha_anchors/scaler_anchors.pkl", 'rb') as f: self.a_s = pickle.load(f)['scaler_X']
+        with open(MODEL_DIR/"gp_alpha_anchors/gp_alpha_anchors_suite.pkl", 'rb') as f: self.a_m = pickle.load(f)
 
-    with open(MODEL_DIR/"gp_vpi_surrogate/scalers_VPI.pkl", 'rb') as f: v_s = pickle.load(f)
-    with open(MODEL_DIR/"gp_vpi_surrogate/gp_model_VPI.pkl", 'rb') as f: v_m = pickle.load(f)
-    vn, vs = v_m.predict(v_s['scaler_X'].transform(x8), return_std=True)
-    v_base = 10 ** v_s['scaler_y'].inverse_transform(vn.reshape(-1,1)).ravel()[0]
-    v_std = v_base * np.log(10) * vs[0] * v_s['scaler_y'].scale_[0]
+    def predict(self, geom_mm, L_mm, Rt):
+        ws, gap, mtx, cap, l1, l2, w1, w2 = geom_mm
+        bp = (l1 + w1 + l2 + w2) * (ws / gap)
+        x8 = np.array([[cap, gap, l1, l2, mtx, w1, w2, ws]])
+        x9 = np.array([[cap, gap, l1, l2, mtx, w1, w2, ws, bp]])
 
-    with open(MODEL_DIR/"gp_nm_zc_surrogate/scalers_nm_zc.pkl", 'rb') as f: nz_s = pickle.load(f)
-    with open(MODEL_DIR/"gp_nm_zc_surrogate/gp_model_nm_60.pkl", 'rb') as f: n_m = pickle.load(f)
-    with open(MODEL_DIR/"gp_nm_zc_surrogate/gp_model_Zc_60.pkl", 'rb') as f: z_m = pickle.load(f)
-    X_nz = nz_s['scaler_X'].transform(x9)
-    nn, ns = n_m.predict(X_nz, return_std=True)
-    zn, zs = z_m.predict(X_nz, return_std=True)
-    nm = nz_s['scalers_y']['nm_60'].inverse_transform(nn.reshape(-1,1)).ravel()[0]
-    zc = nz_s['scalers_y']['Zc_60'].inverse_transform(zn.reshape(-1,1)).ravel()[0]
-    n_std = ns[0] * nz_s['scalers_y']['nm_60'].scale_[0]
-    z_std = zs[0] * nz_s['scalers_y']['Zc_60'].scale_[0]
+        vn, vs = self.v_m.predict(self.v_s['scaler_X'].transform(x8), return_std=True)
+        v_base = 10 ** self.v_s['scaler_y'].inverse_transform(vn.reshape(-1,1)).ravel()[0]
+        v_std = v_base * np.log(10) * vs[0] * self.v_s['scaler_y'].scale_[0]
 
-    with open(MODEL_DIR/"gp_alpha_anchors/scaler_anchors.pkl", 'rb') as f: a_s = pickle.load(f)['scaler_X']
-    with open(MODEL_DIR/"gp_alpha_anchors/gp_alpha_anchors_suite.pkl", 'rb') as f: a_m = pickle.load(f)
-    Xa = a_s.transform(x9)
-    y20, s20 = a_m['Alpha_20GHz_dB_cm'].predict(Xa, return_std=True)
-    y60, s60 = a_m['Alpha_60GHz_dB_cm'].predict(Xa, return_std=True)
-    y100, s100 = a_m['Alpha_100GHz_dB_cm'].predict(Xa, return_std=True)
+        X_nz = self.nz_s['scaler_X'].transform(x9)
+        nn, ns = self.n_m.predict(X_nz, return_std=True)
+        zn, zs = self.z_m.predict(X_nz, return_std=True)
+        nm = self.nz_s['scalers_y']['nm_60'].inverse_transform(nn.reshape(-1,1)).ravel()[0]
+        zc = self.nz_s['scalers_y']['Zc_60'].inverse_transform(zn.reshape(-1,1)).ravel()[0]
+        n_std = ns[0] * self.nz_s['scalers_y']['nm_60'].scale_[0]
+        z_std = zs[0] * self.nz_s['scalers_y']['Zc_60'].scale_[0]
 
-    a20, a60, a100 = 10**y20[0], 10**y60[0], 10**y100[0]
-    a20_w, a60_w, a100_w = 10**(y20[0]+1.96*s20[0]), 10**(y60[0]+1.96*s60[0]), 10**(y100[0]+1.96*s100[0])
-    a20_b, a60_b, a100_b = 10**(y20[0]-1.96*s20[0]), 10**(y60[0]-1.96*s60[0]), 10**(y100[0]-1.96*s100[0])
+        Xa = self.a_s.transform(x9)
+        y20, s20 = self.a_m['Alpha_20GHz_dB_cm'].predict(Xa, return_std=True)
+        y60, s60 = self.a_m['Alpha_60GHz_dB_cm'].predict(Xa, return_std=True)
+        y100, s100 = self.a_m['Alpha_100GHz_dB_cm'].predict(Xa, return_std=True)
 
-    f_ax = np.linspace(1.0, 150.0, 500)
-    Lm = L_mm * 1e-3
+        a20, a60, a100 = 10**y20[0], 10**y60[0], 10**y100[0]
+        a20_w, a60_w, a100_w = 10**(y20[0]+1.96*s20[0]), 10**(y60[0]+1.96*s60[0]), 10**(y100[0]+1.96*s100[0])
+        a20_b, a60_b, a100_b = 10**(y20[0]-1.96*s20[0]), 10**(y60[0]-1.96*s60[0]), 10**(y100[0]-1.96*s100[0])
 
-    def get_bw(al):
-        p, _ = curve_fit(fit_alpha, [20., 60., 100.], al)
-        s21, _ = calc_eo(f_ax, fit_alpha(f_ax, *p), nm, zc, Lm, 2.27, 50.0, Rt)
-        if s21[-1] > -3.0: return 150.0, s21, p
-        i = np.where(s21 <= -3.0)[0][0]
-        return f_ax[i-1] + (f_ax[i]-f_ax[i-1])*(-3.0-s21[i-1])/(s21[i]-s21[i-1]), s21, p
+        f_ax = np.linspace(1.0, 150.0, 500)
+        Lm = L_mm * 1e-3
 
-    bw_n, s21_n, p_n = get_bw([a20, a60, a100])
-    bw_l, _, p_w = get_bw([a20_w, a60_w, a100_w])
-    bw_u, _, p_b = get_bw([a20_b, a60_b, a100_b])
+        def get_bw(al):
+            p, _ = curve_fit(fit_alpha, [20., 60., 100.], al)
+            s21, _ = calc_eo(f_ax, fit_alpha(f_ax, *p), nm, zc, Lm, 2.27, 50.0, Rt)
+            if s21[-1] > -3.0: return 150.0, s21, p
+            i = np.where(s21 <= -3.0)[0][0]
+            return f_ax[i-1] + (f_ax[i]-f_ax[i-1])*(-3.0-s21[i-1])/(s21[i]-s21[i-1]), s21, p
 
-    _, t_lossless = calc_eo(f_ax, np.zeros_like(f_ax), nm, zc, Lm, 2.27, 50.0, Rt)
-    _, t_lossy = calc_eo(f_ax, fit_alpha(f_ax, *p_n), nm, zc, Lm, 2.27, 50.0, Rt)
-    
-    i60 = np.argmin(np.abs(f_ax - 60.0))
-    Lcm = L_mm / 10.0
-    vl, vfull = (v_base/Lcm)/np.abs(t_lossless[i60]), (v_base/Lcm)/np.abs(t_lossy[i60])
+        bw_n, s21_n, p_n = get_bw([a20, a60, a100])
+        bw_l, _, p_w = get_bw([a20_w, a60_w, a100_w])
+        bw_u, _, p_b = get_bw([a20_b, a60_b, a100_b])
 
-    g_lim = 10**(-10/20)
-    rtm = max(65.0 * (1-g_lim)/(1+g_lim), zc * (1-g_lim)/(1+g_lim))
+        _, t_lossless = calc_eo(f_ax, np.zeros_like(f_ax), nm, zc, Lm, 2.27, 50.0, Rt)
+        _, t_lossy = calc_eo(f_ax, fit_alpha(f_ax, *p_n), nm, zc, Lm, 2.27, 50.0, Rt)
+        
+        i60 = np.argmin(np.abs(f_ax - 60.0))
+        Lcm = L_mm / 10.0
+        vl, vfull = (v_base/Lcm)/np.abs(t_lossless[i60]), (v_base/Lcm)/np.abs(t_lossy[i60])
 
-    return {
-        'vpi': (v_base/Lcm, v_std/Lcm), 'nm': (nm, n_std), 'zc': (zc, z_std),
-        'v_ll': (vl, (v_std/Lcm)*(vl/(v_base/Lcm))), 'v_full': (vfull, (v_std/Lcm)*(vfull/(v_base/Lcm))),
-        'bw': (bw_n, bw_l, bw_u), 'rt_min': rtm, 's21': s21_n, 'f_axis': f_ax,
-        'a60': (a60, a60_b, a60_w), 'a_nom': fit_alpha(f_ax, *p_n), 
-        'a_bc': fit_alpha(f_ax, *p_b), 'a_wc': fit_alpha(f_ax, *p_w)
-    }
+        g_lim = 10**(-10/20)
+        rtm = max(65.0 * (1-g_lim)/(1+g_lim), zc * (1-g_lim)/(1+g_lim))
+
+        return {
+            'vpi': (v_base/Lcm, v_std/Lcm), 'nm': (nm, n_std), 'zc': (zc, z_std),
+            'v_ll': (vl, (v_std/Lcm)*(vl/(v_base/Lcm))), 'v_full': (vfull, (v_std/Lcm)*(vfull/(v_base/Lcm))),
+            'bw': (bw_n, bw_l, bw_u), 'rt_min': rtm, 's21': s21_n, 'f_axis': f_ax,
+            'a60': (a60, a60_b, a60_w), 'a_nom': fit_alpha(f_ax, *p_n), 
+            'a_bc': fit_alpha(f_ax, *p_b), 'a_wc': fit_alpha(f_ax, *p_w)
+        }
+
+@st.cache_resource
+def load_engine(): return FastPredictor()
+engine = load_engine()
 
 # ==========================================
-# 4. INVERSE SEARCH ALGORITHM
+# 4. INVERSE SEARCH ALGORITHM (SOBOL + SLSQP)
 # ==========================================
+def slsqp_inverse_polish(best_sobol_x):
+    """Takes the best coarse Sobol guess and gradient-polishes it to the exact targets."""
+    def objective(x):
+        try:
+            # x is [WS, GAP, MTX, CAP_W, L1, L2, W1, W2, L_dev, Rt]
+            res = engine.predict(x[:8]/1000.0, x[8], x[9])
+            
+            err = ((res['bw'][0] - t_bw)/tol_bw)**2 + \
+                  ((res['vpi'][0] - t_vpi)/tol_vpi)**2 + \
+                  ((res['zc'][0] - t_zc)/tol_zc)**2 + \
+                  ((res['nm'][0] - t_nm)/tol_nm)**2
+            return err
+        except:
+            return 1e6 # Extreme penalty if bounds/physics break
+
+    # Constraints ensuring geometrical validity and S11 reflection limits
+    def constr_cap(x): return (x[1] - 1.0) - x[3]
+    def constr_w(x): return 60.0 - (x[6] + x[7])
+    def constr_rt(x): 
+        try: return x[9] - engine.predict(x[:8]/1000.0, x[8], x[9])['rt_min']
+        except: return -1.0
+
+    constraints = [
+        {'type': 'ineq', 'fun': constr_cap},
+        {'type': 'ineq', 'fun': constr_w},
+        {'type': 'ineq', 'fun': constr_rt}
+    ]
+
+    res = scipy_minimize(
+        objective, x0=best_sobol_x, method='SLSQP',
+        bounds=BOUNDS, constraints=constraints,
+        options={'ftol': 1e-4, 'maxiter': 50}
+    )
+    return res.x
+
 def run_inverse_search():
     N_CANDS = 250000
     prog = st.progress(0, f"Stage 1: Flooding space with {N_CANDS} Sobol sequence geometries...")
@@ -175,10 +217,9 @@ def run_inverse_search():
     
     st.info(f"**Diagnostic 1:** Geometric constraints kept {len(X_v)} valid topologies.")
     if len(X_v) == 0:
-        st.error("No candidates pass geometric bounds. Relax constraints.")
-        return
+        st.error("No candidates pass geometric bounds. Relax constraints."); return
         
-    prog.progress(0.2, f"Stage 2: Machine Learning Inference on {len(X_v)} layouts...")
+    prog.progress(0.2, f"Stage 2: Fast ML Inference on {len(X_v)} layouts...")
     
     X8_mm = np.zeros((len(X_v), 8))
     X8_mm[:, 0] = X_v[:, 3] / 1e3 # CAP_W
@@ -193,21 +234,13 @@ def run_inverse_search():
     BP_mm = (X8_mm[:,2] + X8_mm[:,5] + X8_mm[:,3] + X8_mm[:,6]) * (X8_mm[:,7] / X8_mm[:,1])
     X9_mm = np.column_stack([X8_mm, BP_mm])
     
-    with open(MODEL_DIR/"gp_vpi_surrogate/scalers_VPI.pkl", 'rb') as f: v_s = pickle.load(f)
-    with open(MODEL_DIR/"gp_vpi_surrogate/gp_model_VPI.pkl", 'rb') as f: v_m = pickle.load(f)
-    v_base = 10 ** v_s['scaler_y'].inverse_transform(v_m.predict(v_s['scaler_X'].transform(X8_mm)).reshape(-1,1)).ravel()
-    del v_m; gc.collect()
+    # We reuse the cached engine's models directly to avoid memory overhead
+    v_base = 10 ** engine.v_s['scaler_y'].inverse_transform(engine.v_m.predict(engine.v_s['scaler_X'].transform(X8_mm)).reshape(-1,1)).ravel()
+    X_nz = engine.nz_s['scaler_X'].transform(X9_mm)
+    nm = engine.nz_s['scalers_y']['nm_60'].inverse_transform(engine.n_m.predict(X_nz).reshape(-1,1)).ravel()
+    zc = engine.nz_s['scalers_y']['Zc_60'].inverse_transform(engine.z_m.predict(X_nz).reshape(-1,1)).ravel()
     
-    with open(MODEL_DIR/"gp_nm_zc_surrogate/scalers_nm_zc.pkl", 'rb') as f: nz_s = pickle.load(f)
-    X_nz = nz_s['scaler_X'].transform(X9_mm)
-    with open(MODEL_DIR/"gp_nm_zc_surrogate/gp_model_nm_60.pkl", 'rb') as f: n_m = pickle.load(f)
-    nm = nz_s['scalers_y']['nm_60'].inverse_transform(n_m.predict(X_nz).reshape(-1,1)).ravel()
-    del n_m; gc.collect()
-    with open(MODEL_DIR/"gp_nm_zc_surrogate/gp_model_Zc_60.pkl", 'rb') as f: z_m = pickle.load(f)
-    zc = nz_s['scalers_y']['Zc_60'].inverse_transform(z_m.predict(X_nz).reshape(-1,1)).ravel()
-    del z_m; gc.collect()
-    
-    # Stage 3: Soft Sieve (USING DC VPI FOR SCORING)
+    # Stage 3: Soft Sieve
     prog.progress(0.6, "Stage 3: Extracting broad performance subsets...")
     vpi_dc = v_base / (X_v[:, 8] / 10.0) 
     
@@ -228,22 +261,19 @@ def run_inverse_search():
         st.error("❌ Your combination of Zc, nm, and Vpi targets is physically impossible within these geometric bounds.")
         return
 
-    # To prevent Streamlit memory crash, only process the top 2000 closest DC matches
-    if len(X_candidates) > 2000:
+    # Protect RAM by limiting cascade to top 1500 nearest matches
+    if len(X_candidates) > 1500:
         pre_err = ((nm_c - t_nm)/tol_nm)**2 + ((zc_c - t_zc)/tol_zc)**2 + ((vpi_dc_c - t_vpi)/tol_vpi)**2
-        best_pre = np.argsort(pre_err)[:2000]
+        best_pre = np.argsort(pre_err)[:1500]
         X_candidates = X_candidates[best_pre]; nm_c = nm_c[best_pre]; zc_c = zc_c[best_pre]; vpi_dc_c = vpi_dc_c[best_pre]
         X9_surv = X9_surv[best_pre]
 
-    prog.progress(0.8, f"Stage 4: Running RF Broadband Cascade on top {len(X_candidates)} designs...")
+    prog.progress(0.8, f"Stage 4: Running RF Broadband Cascade & Scoring top {len(X_candidates)} designs...")
     
-    with open(MODEL_DIR/"gp_alpha_anchors/scaler_anchors.pkl", 'rb') as f: a_s = pickle.load(f)['scaler_X']
-    with open(MODEL_DIR/"gp_alpha_anchors/gp_alpha_anchors_suite.pkl", 'rb') as f: a_m = pickle.load(f)
-    Xa_c = a_s.transform(X9_surv)
-    a20 = 10 ** a_m['Alpha_20GHz_dB_cm'].predict(Xa_c)
-    a60 = 10 ** a_m['Alpha_60GHz_dB_cm'].predict(Xa_c)
-    a100 = 10 ** a_m['Alpha_100GHz_dB_cm'].predict(Xa_c)
-    del a_m; gc.collect()
+    Xa_c = engine.a_s.transform(X9_surv)
+    a20 = 10 ** engine.a_m['Alpha_20GHz_dB_cm'].predict(Xa_c)
+    a60 = 10 ** engine.a_m['Alpha_60GHz_dB_cm'].predict(Xa_c)
+    a100 = 10 ** engine.a_m['Alpha_100GHz_dB_cm'].predict(Xa_c)
     
     final_results = []
     f_ax = np.linspace(1.0, 150.0, 500)
@@ -254,7 +284,7 @@ def run_inverse_search():
         
         glim = 10**(-10/20)
         rt_min = max(65.0*(1-glim)/(1+glim), zc_c[i]*(1-glim)/(1+glim))
-        if Rt < rt_min: continue # S11 safety check
+        if Rt < rt_min: continue # Strict S11 Safety violation
         
         p, _ = curve_fit(fit_alpha, [20., 60., 100.], [a20[i], a60[i], a100[i]])
         s21, _ = calc_eo(f_ax, fit_alpha(f_ax, *p), nm_c[i], zc_c[i], Lm, 2.27, 50.0, Rt)
@@ -264,19 +294,32 @@ def run_inverse_search():
             idx = np.where(s21 <= -3.0)[0][0]
             bw = f_ax[idx-1] + (f_ax[idx]-f_ax[idx-1])*(-3.0-s21[idx-1])/(s21[idx]-s21[idx-1])
         
-        # Scoring uses the target Electrostatic VPI !
         err = ((bw - t_bw)/tol_bw)**2 + ((vpi_dc_c[i] - t_vpi)/tol_vpi)**2 + ((zc_c[i] - t_zc)/tol_zc)**2 + ((nm_c[i] - t_nm)/tol_nm)**2
         final_results.append({'x': X_candidates[i], 'err': err})
         
     prog.empty()
-    st.info(f"**Diagnostic 3:** {len(final_results)} designs successfully passed the S11 Reflection Line limit.")
+    st.info(f"**Diagnostic 3:** {len(final_results)} designs successfully passed the Broadband Cascade & S11 Reflection limits.")
     if not final_results:
-        st.error("❌ Geometries survived electrostatics, but violated the S11 Reflection limits for Rt. Try increasing the Max Rt bound.")
-        return
+        st.error("❌ Geometries survived electrostatics, but violated the S11 Reflection limits for Rt. Try increasing the Max Rt bound."); return
         
     final_results.sort(key=lambda item: item['err'])
-    st.session_state['inv_res'] = [r['x'] for r in final_results[:5]]
-    st.success(f"✅ Search complete! Showing the Top {len(st.session_state['inv_res'])} absolute best physical matches.")
+    best_coarse_guesses = [r['x'] for r in final_results[:5]]
+    
+    # ----------------------------------------------------
+    # STAGE 5: THE SLSQP POLISHER (The Final Fix!)
+    # ----------------------------------------------------
+    prog = st.progress(0, "Stage 5: Gradient-Polishing the best neighborhood guesses to lock into exact targets...")
+    st.info(f"**Diagnostic 4:** Initiating local gradient descent to find the absolute mathematically exact valleys...")
+    
+    polished_results = []
+    for idx, coarse_x in enumerate(best_coarse_guesses):
+        polished_x = slsqp_inverse_polish(coarse_x)
+        polished_results.append(polished_x)
+        prog.progress((idx + 1) / 5)
+        
+    prog.empty()
+    st.session_state['inv_res'] = polished_results
+    st.success(f"✅ Search & Optimization complete! Showing the Top {len(st.session_state['inv_res'])} absolute best physical matches.")
 
 # ==========================================
 # 5. VISUALIZATION
@@ -315,9 +358,10 @@ if st.button("SYNTHESIZE GEOMETRY", type="primary"):
 
 if 'inv_res' in st.session_state:
     st.markdown("---")
+    
     for i, x in enumerate(st.session_state['inv_res']):
         with st.expander(f"🏅 Candidate {i+1} | L={x[8]:.1f} mm | Rt={x[9]:.1f} Ω", expanded=(i==0)):
-            res = get_detailed_predictions(x[:8], x[8], x[9])
+            res = engine.predict(x[:8]/1000.0, x[8], x[9])
             
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("EO Bandwidth", f"{res['bw'][0]:.1f} GHz", delta=f"{res['bw'][0]-t_bw:+.1f} from target")
