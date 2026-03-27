@@ -21,7 +21,7 @@ st.title("🔍 Ultimate Inverse Synthesizer")
 st.markdown("""
 **Goal-Seeking Engine.** Input your exact target broadband FOMs and tolerances. 
 The hybrid GP-Physics engine will flood the 10-DOF space using a Quasi-Monte Carlo Sobol sequence, 
-filtering through 100,000 combinations to back-calculate the exact geometries that satisfy your physics.
+filtering through 250,000 combinations to back-calculate the exact geometries that satisfy your physics.
 """)
 
 # ==========================================
@@ -29,10 +29,10 @@ filtering through 100,000 combinations to back-calculate the exact geometries th
 # ==========================================
 st.sidebar.header("1. Performance Targets")
 
-t_vpi = st.sidebar.number_input("Target Vpi (Length Scaled) [V]", value=1.50, step=0.1)
+t_vpi = st.sidebar.number_input("Target Vpi (Length Scaled) [V]", value=2.00, step=0.1)
 tol_vpi = st.sidebar.number_input("Vpi Tolerance (+/-) [V]", value=0.20, step=0.05)
 
-t_bw = st.sidebar.number_input("Target EO Bandwidth [GHz]", value=100.0, step=5.0)
+t_bw = st.sidebar.number_input("Target EO Bandwidth [GHz]", value=60.0, step=5.0)
 tol_bw = st.sidebar.number_input("Bandwidth Tol (+/-) [GHz]", value=10.0, step=2.0)
 
 t_zc = st.sidebar.number_input("Target Zc [Ω]", value=50.0, step=1.0)
@@ -159,8 +159,8 @@ def get_detailed_predictions(geom, L_mm, Rt):
 # 4. INVERSE SEARCH ALGORITHM
 # ==========================================
 def run_inverse_search():
-    N_CANDS = 100000
-    prog = st.progress(0, "Stage 1: Flooding space with Sobol sequence...")
+    N_CANDS = 250000
+    prog = st.progress(0, f"Stage 1: Flooding space with {N_CANDS} Sobol sequence geometries...")
     
     sobol = SobolEngine(10, scramble=True, seed=42)
     X_u = sobol.draw(N_CANDS).numpy()
@@ -229,7 +229,8 @@ def run_inverse_search():
     f_ax = np.linspace(1.0, 150.0, 500)
     
     for i in range(len(X_candidates)):
-        Lm = X_candidates[i, 8] / 1000.0
+        Lm = X_candidates[i, 8] / 1000.0  # mm to meters
+        Lcm = X_candidates[i, 8] / 10.0   # mm to cm
         Rt = X_candidates[i, 9]
         
         glim = 10**(-10/20)
@@ -246,7 +247,9 @@ def run_inverse_search():
             
         if np.abs(bw - t_bw) > tol_bw: continue
         
-        v_lossy = (v_c[i] / (Lm*10)) / np.abs(ty[np.argmin(np.abs(f_ax - 60.0))])
+        # THE FIX: Divide v_c[i] by Lcm, NOT Lm*10!
+        v_lossy = (v_c[i] / Lcm) / np.abs(ty[np.argmin(np.abs(f_ax - 60.0))])
+        
         if np.abs(v_lossy - t_vpi) > tol_vpi: continue
         
         err = ((bw-t_bw)/t_bw)**2 + ((v_lossy-t_vpi)/t_vpi)**2 + ((zc_c[i]-t_zc)/t_zc)**2 + ((nm_c[i]-t_nm)/t_nm)**2
@@ -258,6 +261,7 @@ def run_inverse_search():
         
     final_results.sort(key=lambda item: item['err'])
     st.session_state['inv_res'] = [r['x'] for r in final_results[:5]]
+    st.session_state['total_found'] = len(final_results)
 
 # ==========================================
 # 5. VISUALIZATION
@@ -295,10 +299,10 @@ if st.button("SYNTHESIZE GEOMETRY", type="primary"): run_inverse_search()
 
 if 'inv_res' in st.session_state:
     st.markdown("---")
-    st.success(f"✅ Scanning complete! Displaying the top {len(st.session_state['inv_res'])} matching geometries.")
+    st.success(f"✅ Scanning complete! Found **{st.session_state['total_found']}** matching geometries. Displaying the top {len(st.session_state['inv_res'])} best matches:")
     
     for i, x in enumerate(st.session_state['inv_res']):
-        with st.expander(f"🏅 Candidate {i+1} | View Details", expanded=(i==0)):
+        with st.expander(f"🏅 Candidate {i+1} | L={x[8]:.1f} mm | Rt={x[9]:.1f} Ω", expanded=(i==0)):
             res = get_detailed_predictions(x[:8], x[8], x[9])
             
             # Metrics
