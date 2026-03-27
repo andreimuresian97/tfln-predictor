@@ -28,6 +28,7 @@ scores candidates using Weighted Euclidean Distance, and back-calculates the abs
 # 2. SIDEBAR: TARGETS & BOUNDS
 # ==========================================
 st.sidebar.header("1. Performance Targets")
+st.sidebar.caption("Note: Vpi target evaluates the Electrostatic (DC) Baseline.")
 
 t_vpi = st.sidebar.number_input("Target Vpi (Length Scaled) [V]", value=2.00, step=0.1)
 tol_vpi = st.sidebar.number_input("Vpi Tolerance (+/-) [V]", value=0.20, step=0.05)
@@ -89,10 +90,7 @@ def calc_eo(f_GHz, alpha, nm, Zc, L_m, ng=2.27, Zs=50.0, Rt=42.0):
     return 20 * np.log10(np.abs(s21_abs) / np.abs(s21_abs[idx_1G])), s21_abs / (zin / (Zs + zin))
 
 def get_detailed_predictions(geom_um, L_mm, Rt):
-    """Heavy inference for the top winners to generate plots and CIs."""
-    # BUG FIX: Explicitly scaling um to mm right at the entry point!
     ws, gap, mtx, cap, l1, l2, w1, w2 = np.array(geom_um) / 1000.0
-    
     bp = (l1 + w1 + l2 + w2) * (ws / gap)
     x8 = np.array([[cap, gap, l1, l2, mtx, w1, w2, ws]])
     x9 = np.array([[cap, gap, l1, l2, mtx, w1, w2, ws, bp]])
@@ -173,14 +171,15 @@ def run_inverse_search():
     # Fast Geom Filter
     cap_c=3; gap_c=1; w1_c=6; w2_c=7
     mask_geom = (X_p[:, cap_c] < (X_p[:, gap_c] - 1.0)) & ((X_p[:, w1_c] + X_p[:, w2_c]) < 60.0)
-    X_v = X_p[mask_geom] # These are in micrometers!
+    X_v = X_p[mask_geom]   
     
+    st.info(f"**Diagnostic 1:** Geometric constraints kept {len(X_v)} valid topologies.")
     if len(X_v) == 0:
-        st.error("No candidates pass geometric bounds."); return
+        st.error("No candidates pass geometric bounds. Relax constraints.")
+        return
         
     prog.progress(0.2, f"Stage 2: Machine Learning Inference on {len(X_v)} layouts...")
     
-    # BUG FIX: Creating a dedicated mm array for the ML models
     X8_mm = np.zeros((len(X_v), 8))
     X8_mm[:, 0] = X_v[:, 3] / 1e3 # CAP_W
     X8_mm[:, 1] = X_v[:, 1] / 1e3 # GAP
@@ -208,25 +207,35 @@ def run_inverse_search():
     zc = nz_s['scalers_y']['Zc_60'].inverse_transform(z_m.predict(X_nz).reshape(-1,1)).ravel()
     del z_m; gc.collect()
     
-    # Stage 3: Generous Soft-Sieve
+    # Stage 3: Soft Sieve (USING DC VPI FOR SCORING)
     prog.progress(0.6, "Stage 3: Extracting broad performance subsets...")
-    vpi_approx = v_base / (X_v[:, 8] / 10.0)
+    vpi_dc = v_base / (X_v[:, 8] / 10.0) 
     
-    # Using 3x tolerances to generously catch any design that MIGHT polish into the target
-    mask_perf = (np.abs(nm - t_nm) <= tol_nm * 3) & \
-                (np.abs(zc - t_zc) <= tol_zc * 3) & \
-                (vpi_approx <= t_vpi + tol_vpi + 0.5)
+    # Generous 5x tolerance net
+    mask_perf = (np.abs(nm - t_nm) <= tol_nm * 5) & \
+                (np.abs(zc - t_zc) <= tol_zc * 5) & \
+                (np.abs(vpi_dc - t_vpi) <= tol_vpi * 5)
                 
     X_candidates = X_v[mask_perf]
-    X9_surv = X9_mm[mask_perf] # The scaled mm array must be passed!
-    v_c = v_base[mask_perf]
+    X9_surv = X9_mm[mask_perf]
     nm_c = nm[mask_perf]
     zc_c = zc[mask_perf]
+    vpi_dc_c = vpi_dc[mask_perf]
     
+    st.info(f"**Diagnostic 2:** Soft performance sieve kept {len(X_candidates)} viable ML candidates.")
     if len(X_candidates) == 0:
-        prog.empty(); st.error("❌ Your combination of Zc, nm, and Vpi targets is physically impossible within these geometric bounds."); return
+        prog.empty()
+        st.error("❌ Your combination of Zc, nm, and Vpi targets is physically impossible within these geometric bounds.")
+        return
 
-    prog.progress(0.8, f"Stage 4: Running Broadband Cascade & Scoring top {len(X_candidates)} designs...")
+    # To prevent Streamlit memory crash, only process the top 2000 closest DC matches
+    if len(X_candidates) > 2000:
+        pre_err = ((nm_c - t_nm)/tol_nm)**2 + ((zc_c - t_zc)/tol_zc)**2 + ((vpi_dc_c - t_vpi)/tol_vpi)**2
+        best_pre = np.argsort(pre_err)[:2000]
+        X_candidates = X_candidates[best_pre]; nm_c = nm_c[best_pre]; zc_c = zc_c[best_pre]; vpi_dc_c = vpi_dc_c[best_pre]
+        X9_surv = X9_surv[best_pre]
+
+    prog.progress(0.8, f"Stage 4: Running RF Broadband Cascade on top {len(X_candidates)} designs...")
     
     with open(MODEL_DIR/"gp_alpha_anchors/scaler_anchors.pkl", 'rb') as f: a_s = pickle.load(f)['scaler_X']
     with open(MODEL_DIR/"gp_alpha_anchors/gp_alpha_anchors_suite.pkl", 'rb') as f: a_m = pickle.load(f)
@@ -240,34 +249,34 @@ def run_inverse_search():
     f_ax = np.linspace(1.0, 150.0, 500)
     
     for i in range(len(X_candidates)):
-        Lm = X_candidates[i, 8] / 1000.0  
-        Lcm = X_candidates[i, 8] / 10.0   
+        Lm = X_candidates[i, 8] / 1000.0   
         Rt = X_candidates[i, 9]
         
         glim = 10**(-10/20)
         rt_min = max(65.0*(1-glim)/(1+glim), zc_c[i]*(1-glim)/(1+glim))
-        if Rt < rt_min: continue # Strict Safety violation, drop it
+        if Rt < rt_min: continue # S11 safety check
         
         p, _ = curve_fit(fit_alpha, [20., 60., 100.], [a20[i], a60[i], a100[i]])
-        s21, ty = calc_eo(f_ax, fit_alpha(f_ax, *p), nm_c[i], zc_c[i], Lm, 2.27, 50.0, Rt)
+        s21, _ = calc_eo(f_ax, fit_alpha(f_ax, *p), nm_c[i], zc_c[i], Lm, 2.27, 50.0, Rt)
         
         if s21[-1] > -3.0: bw = 150.0
         else:
             idx = np.where(s21 <= -3.0)[0][0]
             bw = f_ax[idx-1] + (f_ax[idx]-f_ax[idx-1])*(-3.0-s21[idx-1])/(s21[idx]-s21[idx-1])
-            
-        v_lossy = (v_c[i] / Lcm) / np.abs(ty[np.argmin(np.abs(f_ax - 60.0))])
         
-        # Weighted Euclidean Distance Scoring
-        err = ((bw-t_bw)/tol_bw)**2 + ((v_lossy-t_vpi)/tol_vpi)**2 + ((zc_c[i]-t_zc)/tol_zc)**2 + ((nm_c[i]-t_nm)/tol_nm)**2
+        # Scoring uses the target Electrostatic VPI !
+        err = ((bw - t_bw)/tol_bw)**2 + ((vpi_dc_c[i] - t_vpi)/tol_vpi)**2 + ((zc_c[i] - t_zc)/tol_zc)**2 + ((nm_c[i] - t_nm)/tol_nm)**2
         final_results.append({'x': X_candidates[i], 'err': err})
         
     prog.empty()
+    st.info(f"**Diagnostic 3:** {len(final_results)} designs successfully passed the S11 Reflection Line limit.")
     if not final_results:
-        st.error("❌ Geometries survived electrostatics, but violated the S11 Reflection limits for Rt. Try increasing the Max Rt bound."); return
+        st.error("❌ Geometries survived electrostatics, but violated the S11 Reflection limits for Rt. Try increasing the Max Rt bound.")
+        return
         
     final_results.sort(key=lambda item: item['err'])
     st.session_state['inv_res'] = [r['x'] for r in final_results[:5]]
+    st.success(f"✅ Search complete! Showing the Top {len(st.session_state['inv_res'])} absolute best physical matches.")
 
 # ==========================================
 # 5. VISUALIZATION
@@ -301,49 +310,43 @@ def generate_exact_svg(p):
 # ==========================================
 # 6. UI EXECUTION
 # ==========================================
-if st.button("SYNTHESIZE GEOMETRY", type="primary"): run_inverse_search()
+if st.button("SYNTHESIZE GEOMETRY", type="primary"):
+    run_inverse_search()
 
 if 'inv_res' in st.session_state:
     st.markdown("---")
-    st.success(f"✅ Scanning complete! Displaying the top {len(st.session_state['inv_res'])} best mathematical compromises.")
-    
     for i, x in enumerate(st.session_state['inv_res']):
         with st.expander(f"🏅 Candidate {i+1} | L={x[8]:.1f} mm | Rt={x[9]:.1f} Ω", expanded=(i==0)):
             res = get_detailed_predictions(x[:8], x[8], x[9])
             
-            # Metrics
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("EO Bandwidth", f"{res['bw'][0]:.1f} GHz", delta=f"{res['bw'][0]-t_bw:+.1f} from target")
-            c2.metric("VPI (RF)", f"{res['v_full'][0]:.2f} V", delta=f"{res['v_full'][0]-t_vpi:+.2f} from target", delta_color="inverse")
+            c2.metric("VPI (DC)", f"{res['vpi'][0]:.2f} V", delta=f"{res['vpi'][0]-t_vpi:+.2f} from target", delta_color="inverse")
             c3.metric("Zc", f"{res['zc'][0]:.1f} Ω", delta=f"{res['zc'][0]-t_zc:+.1f} from target")
             c4.metric("nm", f"{res['nm'][0]:.4f}", delta=f"{res['nm'][0]-t_nm:+.4f} from target")
             
-            # Parameters
             st.markdown("### Geometric Layout & Configuration")
             p_dict = dict(zip(VAR_NAMES, x))
             st.table(pd.DataFrame([p_dict]).style.format("{:.3f}"))
             
-            # SVG
             c_svg1, c_svg2 = st.columns(2)
             svg_t, svg_c = generate_exact_svg(p_dict)
             with c_svg1: st.markdown(render_svg(svg_t), unsafe_allow_html=True)
             with c_svg2: st.markdown(render_svg(svg_c), unsafe_allow_html=True)
             
-            # FOM Table
             st.markdown("### 📊 Predicted FOMs (with 95% CI & MAE)")
             m_nm, m_zc, m_vpi, m_a = 0.0264, 1.0, 0.045, 0.15 
             data = [
                 ["Microwave Index (nm)", f"{res['nm'][0]:.4f}", f"[{res['nm'][0]-1.96*res['nm'][1]:.4f}, {res['nm'][0]+1.96*res['nm'][1]:.4f}]", f"± {m_nm:.4f}"],
                 ["Impedance Zc [Ω]", f"{res['zc'][0]:.1f}", f"[{res['zc'][0]-1.96*res['zc'][1]:.1f}, {res['zc'][0]+1.96*res['zc'][1]:.1f}]", f"± {m_zc:.2f}"],
-                ["VPI (Electrostatic) [V]", f"{res['vpi'][0]:.3f}", f"[{res['vpi'][0]-1.96*res['vpi'][1]:.3f}, {res['vpi'][0]+1.96*res['vpi'][1]:.3f}]", f"± {m_vpi:.3f}"],
+                ["VPI (DC) [V]", f"{res['vpi'][0]:.3f}", f"[{res['vpi'][0]-1.96*res['vpi'][1]:.3f}, {res['vpi'][0]+1.96*res['vpi'][1]:.3f}]", f"± {m_vpi:.3f}"],
                 ["RF Attenuation @ 60 GHz [dB/cm]", f"{res['a60'][0]:.3f}", f"[{res['a60'][1]:.3f}, {res['a60'][2]:.3f}]", f"± {m_a:.3f}"],
                 ["EO Bandwidth [GHz]", f"{res['bw'][0]:.1f}", f"[{res['bw'][1]:.1f}, {res['bw'][2]:.1f}]", "N/A"],
-                ["VPI @ 60GHz (Walk-off+Mismatch) [V]", f"{res['v_ll'][0]:.3f}", f"[{res['v_ll'][0]-1.96*res['v_ll'][1]:.3f}, {res['v_ll'][0]+1.96*res['v_ll'][1]:.3f}]", "N/A"],
+                ["VPI @ 60GHz (Walk‑off+Mismatch) [V]", f"{res['v_ll'][0]:.3f}", f"[{res['v_ll'][0]-1.96*res['v_ll'][1]:.3f}, {res['v_ll'][0]+1.96*res['v_ll'][1]:.3f}]", "N/A"],
                 ["VPI @ 60GHz (Full RF Physics) [V]", f"{res['v_full'][0]:.3f}", f"[{res['v_full'][0]-1.96*res['v_full'][1]:.3f}, {res['v_full'][0]+1.96*res['v_full'][1]:.3f}]", "N/A"]
             ]
             st.table(pd.DataFrame(data, columns=["FOM", "Predicted", "95% CI", "Global MAE"]))
             
-            # Plots
             st.markdown("### 📈 Broadband RF Response & Attenuation")
             f1, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
             ax1.plot(res['f_axis'], res['s21'], 'b-', lw=2)
