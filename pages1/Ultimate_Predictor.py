@@ -254,7 +254,7 @@ def predict_sequentially(geometry, L_cm, Zs, Zs_driver, Rt):
         a60_bc = 10**(y60[0] - 1.96*std60[0])
         a100_bc = 10**(y100[0] - 1.96*std100[0])
 
-        # --- 4. Cascade Math for all 3 Scenarios ---
+       # --- 4. Cascade Math for all 3 Scenarios ---
         progress.progress(0.95, text="Calculating Broadband Physics...")
         f_axis = np.linspace(1.0, 150.0, 500)
         L_m = L_cm / 100.0
@@ -262,17 +262,17 @@ def predict_sequentially(geometry, L_cm, Zs, Zs_driver, Rt):
         def get_bw(alphas):
             popt, _ = curve_fit(fit_alpha_scaled, [20.0, 60.0, 100.0], alphas)
             s21_lossy, _ = calculate_eo_response(f_axis, fit_alpha_scaled(f_axis, *popt), nm, zc, L_m, 2.27, Zs, Rt)
-            if s21_lossy[-1] > -3.0: return 150.0, s21_lossy
+            if s21_lossy[-1] > -3.0: return 150.0, s21_lossy, popt
             idx = np.where(s21_lossy <= -3.0)[0][0]
-            return f_axis[idx-1] + (f_axis[idx]-f_axis[idx-1])*(-3.0-s21_lossy[idx-1])/(s21_lossy[idx]-s21_lossy[idx-1]), s21_lossy
+            return f_axis[idx-1] + (f_axis[idx]-f_axis[idx-1])*(-3.0-s21_lossy[idx-1])/(s21_lossy[idx]-s21_lossy[idx-1]), s21_lossy, popt
 
-        bw_nom, s21_nom = get_bw([a20_nom, a60_nom, a100_nom])
-        bw_lower, _ = get_bw([a20_wc, a60_wc, a100_wc]) # Worst attenuation = lower BW
-        bw_upper, _ = get_bw([a20_bc, a60_bc, a100_bc]) # Best attenuation = upper BW
+        bw_nom, s21_nom, popt_nom = get_bw([a20_nom, a60_nom, a100_nom])
+        bw_lower, _, popt_wc = get_bw([a20_wc, a60_wc, a100_wc]) # Worst attenuation = lower BW
+        bw_upper, _, popt_bc = get_bw([a20_bc, a60_bc, a100_bc]) # Best attenuation = upper BW
 
         # VPI calculations
         _, t_lossless = calculate_eo_response(f_axis, np.zeros_like(f_axis), nm, zc, L_m, 2.27, Zs, Rt)
-        _, t_lossy = calculate_eo_response(f_axis, fit_alpha_scaled(f_axis, *curve_fit(fit_alpha_scaled, [20.0, 60.0, 100.0], [a20_nom, a60_nom, a100_nom])[0]), nm, zc, L_m, 2.27, Zs, Rt)
+        _, t_lossy = calculate_eo_response(f_axis, fit_alpha_scaled(f_axis, *popt_nom), nm, zc, L_m, 2.27, Zs, Rt)
         
         idx_60 = np.argmin(np.abs(f_axis - 60.0))
         v_lossless = results['vpi_L'][0] / np.abs(t_lossless[idx_60])
@@ -284,6 +284,12 @@ def predict_sequentially(geometry, L_cm, Zs, Zs_driver, Rt):
         results['bw'] = (bw_nom, bw_lower, bw_upper)
         results['f_axis'] = f_axis
         results['s21'] = s21_nom
+        
+        # --- NEW: EXPORT ATTENUATION DATA ---
+        results['alpha_60'] = (a60_nom, a60_bc, a60_wc) # (Nominal, Lowest Loss, Highest Loss)
+        results['alpha_curve_nom'] = fit_alpha_scaled(f_axis, *popt_nom)
+        results['alpha_curve_bc'] = fit_alpha_scaled(f_axis, *popt_bc)
+        results['alpha_curve_wc'] = fit_alpha_scaled(f_axis, *popt_wc)
         
         gamma_limit = 10 ** (-10.0 / 20.0) 
         results['rt_min'] = max(Zs_driver * (1 - gamma_limit) / (1 + gamma_limit), zc * (1 - gamma_limit) / (1 + gamma_limit))
