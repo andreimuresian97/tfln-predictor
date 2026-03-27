@@ -300,7 +300,6 @@ if st.button("🚀 Predict Performance", type="primary"):
         
         # Top Row Metrics 
 
-[Image of data visualization dashboard]
 
         col1, col2, col3 = st.columns(3)
         col1.metric("EO Bandwidth", f"{res['bw']:.1f} GHz")
