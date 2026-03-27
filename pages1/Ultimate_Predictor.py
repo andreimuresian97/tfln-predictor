@@ -337,7 +337,7 @@ if st.button("🚀 Predict Performance", type="primary"):
         mae_nm = 0.0264
         mae_zc = 0.7726     # <-- Put your actual Zc MAE here
         mae_vpi = 0.0130  # <-- Put your actual Vpi MAE here
-        mae_alpha60 = 0.15 # <-- Put your actual Alpha 60 MAE here
+        mae_alpha60 = 0.3559 # <-- Put your actual Alpha 60 MAE here
         
         data = [
             [
