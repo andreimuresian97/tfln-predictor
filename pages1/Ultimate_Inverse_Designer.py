@@ -32,14 +32,14 @@ st.sidebar.header("1. Performance Targets")
 t_vpi = st.sidebar.number_input("Target Vpi (Length Scaled) [V]", value=2.00, step=0.1)
 tol_vpi = st.sidebar.number_input("Vpi Tolerance (+/-) [V]", value=0.20, step=0.05)
 
-t_bw = st.sidebar.number_input("Target EO Bandwidth [GHz]", value=60.0, step=5.0)
-tol_bw = st.sidebar.number_input("Bandwidth Tol (+/-) [GHz]", value=10.0, step=2.0)
+t_bw = st.sidebar.number_input("Target EO Bandwidth [GHz]", value=80.0, step=5.0)
+tol_bw = st.sidebar.number_input("Bandwidth Tol (+/-) [GHz]", value=8.0, step=1.0)
 
-t_zc = st.sidebar.number_input("Target Zc [Ω]", value=50.0, step=1.0)
+t_zc = st.sidebar.number_input("Target Zc [Ω]", value=70.0, step=1.0)
 tol_zc = st.sidebar.number_input("Zc Tolerance (+/-) [Ω]", value=2.0, step=0.5)
 
 t_nm = st.sidebar.number_input("Target Index (nm)", value=2.270, step=0.01)
-tol_nm = st.sidebar.number_input("Index Tolerance (+/-)", value=0.01, step=0.005)
+tol_nm = st.sidebar.number_input("Index Tolerance (+/-)", value=0.03, step=0.005)
 
 st.sidebar.header("2. Search Space (Bounds)")
 def range_input(label, min_def, max_def, step=0.1, fmt="%.1f"):
@@ -88,9 +88,11 @@ def calc_eo(f_GHz, alpha, nm, Zc, L_m, ng=2.27, Zs=50.0, Rt=42.0):
     idx_1G = np.argmin(np.abs(f_GHz - 1.0))
     return 20 * np.log10(np.abs(s21_abs) / np.abs(s21_abs[idx_1G])), s21_abs / (zin / (Zs + zin))
 
-def get_detailed_predictions(geom, L_mm, Rt):
+def get_detailed_predictions(geom_um, L_mm, Rt):
     """Heavy inference for the top winners to generate plots and CIs."""
-    ws, gap, mtx, cap, l1, l2, w1, w2 = geom
+    # BUG FIX: Explicitly scaling um to mm right at the entry point!
+    ws, gap, mtx, cap, l1, l2, w1, w2 = np.array(geom_um) / 1000.0
+    
     bp = (l1 + w1 + l2 + w2) * (ws / gap)
     x8 = np.array([[cap, gap, l1, l2, mtx, w1, w2, ws]])
     x9 = np.array([[cap, gap, l1, l2, mtx, w1, w2, ws, bp]])
@@ -171,25 +173,34 @@ def run_inverse_search():
     # Fast Geom Filter
     cap_c=3; gap_c=1; w1_c=6; w2_c=7
     mask_geom = (X_p[:, cap_c] < (X_p[:, gap_c] - 1.0)) & ((X_p[:, w1_c] + X_p[:, w2_c]) < 60.0)
-    X_v = X_p[mask_geom]
+    X_v = X_p[mask_geom] # These are in micrometers!
     
     if len(X_v) == 0:
         st.error("No candidates pass geometric bounds."); return
         
     prog.progress(0.2, f"Stage 2: Machine Learning Inference on {len(X_v)} layouts...")
     
-    WS, GAP, MTX, CAP_W, L1, L2, W1, W2 = X_v[:,0]/1e3, X_v[:,1]/1e3, X_v[:,2]/1e3, X_v[:,3]/1e3, X_v[:,4]/1e3, X_v[:,5]/1e3, X_v[:,6]/1e3, X_v[:,7]/1e3
-    BP = (L1+W1+L2+W2)*(WS/GAP)
-    X8 = np.column_stack([CAP_W, GAP, L1, L2, MTX, W1, W2, WS])
-    X9 = np.column_stack([CAP_W, GAP, L1, L2, MTX, W1, W2, WS, BP])
+    # BUG FIX: Creating a dedicated mm array for the ML models
+    X8_mm = np.zeros((len(X_v), 8))
+    X8_mm[:, 0] = X_v[:, 3] / 1e3 # CAP_W
+    X8_mm[:, 1] = X_v[:, 1] / 1e3 # GAP
+    X8_mm[:, 2] = X_v[:, 4] / 1e3 # L1
+    X8_mm[:, 3] = X_v[:, 5] / 1e3 # L2
+    X8_mm[:, 4] = X_v[:, 2] / 1e3 # MTX
+    X8_mm[:, 5] = X_v[:, 6] / 1e3 # W1
+    X8_mm[:, 6] = X_v[:, 7] / 1e3 # W2
+    X8_mm[:, 7] = X_v[:, 0] / 1e3 # WS
+    
+    BP_mm = (X8_mm[:,2] + X8_mm[:,5] + X8_mm[:,3] + X8_mm[:,6]) * (X8_mm[:,7] / X8_mm[:,1])
+    X9_mm = np.column_stack([X8_mm, BP_mm])
     
     with open(MODEL_DIR/"gp_vpi_surrogate/scalers_VPI.pkl", 'rb') as f: v_s = pickle.load(f)
     with open(MODEL_DIR/"gp_vpi_surrogate/gp_model_VPI.pkl", 'rb') as f: v_m = pickle.load(f)
-    v_base = 10 ** v_s['scaler_y'].inverse_transform(v_m.predict(v_s['scaler_X'].transform(X8)).reshape(-1,1)).ravel()
+    v_base = 10 ** v_s['scaler_y'].inverse_transform(v_m.predict(v_s['scaler_X'].transform(X8_mm)).reshape(-1,1)).ravel()
     del v_m; gc.collect()
     
     with open(MODEL_DIR/"gp_nm_zc_surrogate/scalers_nm_zc.pkl", 'rb') as f: nz_s = pickle.load(f)
-    X_nz = nz_s['scaler_X'].transform(X9)
+    X_nz = nz_s['scaler_X'].transform(X9_mm)
     with open(MODEL_DIR/"gp_nm_zc_surrogate/gp_model_nm_60.pkl", 'rb') as f: n_m = pickle.load(f)
     nm = nz_s['scalers_y']['nm_60'].inverse_transform(n_m.predict(X_nz).reshape(-1,1)).ravel()
     del n_m; gc.collect()
@@ -197,39 +208,29 @@ def run_inverse_search():
     zc = nz_s['scalers_y']['Zc_60'].inverse_transform(z_m.predict(X_nz).reshape(-1,1)).ravel()
     del z_m; gc.collect()
     
-    # Stage 3: Physics Soft-Sieve
+    # Stage 3: Generous Soft-Sieve
     prog.progress(0.6, "Stage 3: Extracting broad performance subsets...")
     vpi_approx = v_base / (X_v[:, 8] / 10.0)
     
-    # We use very relaxed tolerances here (5x) just to filter out the absolute garbage.
-    # The actual ranking happens mathematically in Stage 4.
-    mask_perf = (np.abs(nm - t_nm) <= tol_nm * 5) & \
-                (np.abs(zc - t_zc) <= tol_zc * 5) & \
-                (vpi_approx <= t_vpi * 1.5) 
+    # Using 3x tolerances to generously catch any design that MIGHT polish into the target
+    mask_perf = (np.abs(nm - t_nm) <= tol_nm * 3) & \
+                (np.abs(zc - t_zc) <= tol_zc * 3) & \
+                (vpi_approx <= t_vpi + tol_vpi + 0.5)
                 
     X_candidates = X_v[mask_perf]
+    X9_surv = X9_mm[mask_perf] # The scaled mm array must be passed!
     v_c = v_base[mask_perf]
     nm_c = nm[mask_perf]
     zc_c = zc[mask_perf]
     
     if len(X_candidates) == 0:
-        prog.empty(); st.error("❌ Pre-filter failed. Your combination of Zc, nm, and Vpi targets is physically impossible within these geometric bounds."); return
-        
-    # Prevent Streamlit Timeout by taking the best 2000 candidates based on Zc and nm
-    if len(X_candidates) > 2000:
-        pre_err = ((nm_c - t_nm)/tol_nm)**2 + ((zc_c - t_zc)/tol_zc)**2
-        best_pre = np.argsort(pre_err)[:2000]
-        X_candidates = X_candidates[best_pre]; v_c = v_c[best_pre]; nm_c = nm_c[best_pre]; zc_c = zc_c[best_pre]
+        prog.empty(); st.error("❌ Your combination of Zc, nm, and Vpi targets is physically impossible within these geometric bounds."); return
 
     prog.progress(0.8, f"Stage 4: Running Broadband Cascade & Scoring top {len(X_candidates)} designs...")
     
     with open(MODEL_DIR/"gp_alpha_anchors/scaler_anchors.pkl", 'rb') as f: a_s = pickle.load(f)['scaler_X']
     with open(MODEL_DIR/"gp_alpha_anchors/gp_alpha_anchors_suite.pkl", 'rb') as f: a_m = pickle.load(f)
-    # Re-transform just the survivors
-    BP_surv = (X_candidates[:,4] + X_candidates[:,6] + X_candidates[:,5] + X_candidates[:,7]) * (X_candidates[:,0] / X_candidates[:,1])
-    X9_surv = np.column_stack([X_candidates[:,3], X_candidates[:,1], X_candidates[:,4], X_candidates[:,5], X_candidates[:,2], X_candidates[:,6], X_candidates[:,7], X_candidates[:,0], BP_surv])
     Xa_c = a_s.transform(X9_surv)
-    
     a20 = 10 ** a_m['Alpha_20GHz_dB_cm'].predict(Xa_c)
     a60 = 10 ** a_m['Alpha_60GHz_dB_cm'].predict(Xa_c)
     a100 = 10 ** a_m['Alpha_100GHz_dB_cm'].predict(Xa_c)
@@ -257,14 +258,13 @@ def run_inverse_search():
             
         v_lossy = (v_c[i] / Lcm) / np.abs(ty[np.argmin(np.abs(f_ax - 60.0))])
         
-        # We REMOVED the hard continue breaks here.
-        # Instead, we score how badly they missed the target using Weighted Euclidean Distance.
+        # Weighted Euclidean Distance Scoring
         err = ((bw-t_bw)/tol_bw)**2 + ((v_lossy-t_vpi)/tol_vpi)**2 + ((zc_c[i]-t_zc)/tol_zc)**2 + ((nm_c[i]-t_nm)/tol_nm)**2
         final_results.append({'x': X_candidates[i], 'err': err})
         
     prog.empty()
     if not final_results:
-        st.error("❌ The only designs that matched your physics targets violated the S11 Reflection limits for Rt. Try increasing the max Rt bounds."); return
+        st.error("❌ Geometries survived electrostatics, but violated the S11 Reflection limits for Rt. Try increasing the Max Rt bound."); return
         
     final_results.sort(key=lambda item: item['err'])
     st.session_state['inv_res'] = [r['x'] for r in final_results[:5]]
@@ -331,7 +331,7 @@ if 'inv_res' in st.session_state:
             
             # FOM Table
             st.markdown("### 📊 Predicted FOMs (with 95% CI & MAE)")
-            m_nm, m_zc, m_vpi, m_a = 0.0264, 1.0, 0.045, 0.15 # Replace with true MAEs
+            m_nm, m_zc, m_vpi, m_a = 0.0264, 1.0, 0.045, 0.15 
             data = [
                 ["Microwave Index (nm)", f"{res['nm'][0]:.4f}", f"[{res['nm'][0]-1.96*res['nm'][1]:.4f}, {res['nm'][0]+1.96*res['nm'][1]:.4f}]", f"± {m_nm:.4f}"],
                 ["Impedance Zc [Ω]", f"{res['zc'][0]:.1f}", f"[{res['zc'][0]-1.96*res['zc'][1]:.1f}, {res['zc'][0]+1.96*res['zc'][1]:.1f}]", f"± {m_zc:.2f}"],
