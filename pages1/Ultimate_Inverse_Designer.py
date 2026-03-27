@@ -20,8 +20,8 @@ warnings.filterwarnings('ignore')
 st.title("🔍 Ultimate Inverse Synthesizer")
 st.markdown("""
 **Goal-Seeking Engine.** Input your exact target broadband FOMs and tolerances. 
-The hybrid GP-Physics engine will flood the 10-DOF space using a Quasi-Monte Carlo Sobol sequence, 
-filtering through 250,000 combinations to back-calculate the exact geometries that satisfy your physics.
+The hybrid GP-Physics engine floods the 10-DOF space using a Quasi-Monte Carlo Sobol sequence, 
+scores candidates using Weighted Euclidean Distance, and back-calculates the absolute best physical compromises.
 """)
 
 # ==========================================
@@ -89,7 +89,7 @@ def calc_eo(f_GHz, alpha, nm, Zc, L_m, ng=2.27, Zs=50.0, Rt=42.0):
     return 20 * np.log10(np.abs(s21_abs) / np.abs(s21_abs[idx_1G])), s21_abs / (zin / (Zs + zin))
 
 def get_detailed_predictions(geom, L_mm, Rt):
-    """Heavy inference for the top 5 winners to generate plots and CIs."""
+    """Heavy inference for the top winners to generate plots and CIs."""
     ws, gap, mtx, cap, l1, l2, w1, w2 = geom
     bp = (l1 + w1 + l2 + w2) * (ws / gap)
     x8 = np.array([[cap, gap, l1, l2, mtx, w1, w2, ws]])
@@ -178,7 +178,6 @@ def run_inverse_search():
         
     prog.progress(0.2, f"Stage 2: Machine Learning Inference on {len(X_v)} layouts...")
     
-    # Vectorized ML setup
     WS, GAP, MTX, CAP_W, L1, L2, W1, W2 = X_v[:,0]/1e3, X_v[:,1]/1e3, X_v[:,2]/1e3, X_v[:,3]/1e3, X_v[:,4]/1e3, X_v[:,5]/1e3, X_v[:,6]/1e3, X_v[:,7]/1e3
     BP = (L1+W1+L2+W2)*(WS/GAP)
     X8 = np.column_stack([CAP_W, GAP, L1, L2, MTX, W1, W2, WS])
@@ -198,13 +197,15 @@ def run_inverse_search():
     zc = nz_s['scalers_y']['Zc_60'].inverse_transform(z_m.predict(X_nz).reshape(-1,1)).ravel()
     del z_m; gc.collect()
     
-    # Stage 3: Physics Sieve
-    prog.progress(0.6, "Stage 3: Extracting performance subsets...")
+    # Stage 3: Physics Soft-Sieve
+    prog.progress(0.6, "Stage 3: Extracting broad performance subsets...")
     vpi_approx = v_base / (X_v[:, 8] / 10.0)
     
-    mask_perf = (np.abs(nm - t_nm) <= tol_nm) & \
-                (np.abs(zc - t_zc) <= tol_zc) & \
-                (vpi_approx <= t_vpi + tol_vpi + 0.3)
+    # We use very relaxed tolerances here (5x) just to filter out the absolute garbage.
+    # The actual ranking happens mathematically in Stage 4.
+    mask_perf = (np.abs(nm - t_nm) <= tol_nm * 5) & \
+                (np.abs(zc - t_zc) <= tol_zc * 5) & \
+                (vpi_approx <= t_vpi * 1.5) 
                 
     X_candidates = X_v[mask_perf]
     v_c = v_base[mask_perf]
@@ -212,14 +213,23 @@ def run_inverse_search():
     zc_c = zc[mask_perf]
     
     if len(X_candidates) == 0:
-        prog.empty(); st.error("❌ No topologies hit those targets. Relax the tolerances."); return
+        prog.empty(); st.error("❌ Pre-filter failed. Your combination of Zc, nm, and Vpi targets is physically impossible within these geometric bounds."); return
         
-    prog.progress(0.8, f"Stage 4: Running Broadband Cascade on top {len(X_candidates)} designs...")
+    # Prevent Streamlit Timeout by taking the best 2000 candidates based on Zc and nm
+    if len(X_candidates) > 2000:
+        pre_err = ((nm_c - t_nm)/tol_nm)**2 + ((zc_c - t_zc)/tol_zc)**2
+        best_pre = np.argsort(pre_err)[:2000]
+        X_candidates = X_candidates[best_pre]; v_c = v_c[best_pre]; nm_c = nm_c[best_pre]; zc_c = zc_c[best_pre]
+
+    prog.progress(0.8, f"Stage 4: Running Broadband Cascade & Scoring top {len(X_candidates)} designs...")
     
-    # Fetch Alphas
     with open(MODEL_DIR/"gp_alpha_anchors/scaler_anchors.pkl", 'rb') as f: a_s = pickle.load(f)['scaler_X']
     with open(MODEL_DIR/"gp_alpha_anchors/gp_alpha_anchors_suite.pkl", 'rb') as f: a_m = pickle.load(f)
-    Xa_c = a_s.transform(X9[mask_perf])
+    # Re-transform just the survivors
+    BP_surv = (X_candidates[:,4] + X_candidates[:,6] + X_candidates[:,5] + X_candidates[:,7]) * (X_candidates[:,0] / X_candidates[:,1])
+    X9_surv = np.column_stack([X_candidates[:,3], X_candidates[:,1], X_candidates[:,4], X_candidates[:,5], X_candidates[:,2], X_candidates[:,6], X_candidates[:,7], X_candidates[:,0], BP_surv])
+    Xa_c = a_s.transform(X9_surv)
+    
     a20 = 10 ** a_m['Alpha_20GHz_dB_cm'].predict(Xa_c)
     a60 = 10 ** a_m['Alpha_60GHz_dB_cm'].predict(Xa_c)
     a100 = 10 ** a_m['Alpha_100GHz_dB_cm'].predict(Xa_c)
@@ -229,13 +239,13 @@ def run_inverse_search():
     f_ax = np.linspace(1.0, 150.0, 500)
     
     for i in range(len(X_candidates)):
-        Lm = X_candidates[i, 8] / 1000.0  # mm to meters
-        Lcm = X_candidates[i, 8] / 10.0   # mm to cm
+        Lm = X_candidates[i, 8] / 1000.0  
+        Lcm = X_candidates[i, 8] / 10.0   
         Rt = X_candidates[i, 9]
         
         glim = 10**(-10/20)
         rt_min = max(65.0*(1-glim)/(1+glim), zc_c[i]*(1-glim)/(1+glim))
-        if Rt < rt_min: continue # Safety violation
+        if Rt < rt_min: continue # Strict Safety violation, drop it
         
         p, _ = curve_fit(fit_alpha, [20., 60., 100.], [a20[i], a60[i], a100[i]])
         s21, ty = calc_eo(f_ax, fit_alpha(f_ax, *p), nm_c[i], zc_c[i], Lm, 2.27, 50.0, Rt)
@@ -245,23 +255,19 @@ def run_inverse_search():
             idx = np.where(s21 <= -3.0)[0][0]
             bw = f_ax[idx-1] + (f_ax[idx]-f_ax[idx-1])*(-3.0-s21[idx-1])/(s21[idx]-s21[idx-1])
             
-        if np.abs(bw - t_bw) > tol_bw: continue
-        
-        # THE FIX: Divide v_c[i] by Lcm, NOT Lm*10!
         v_lossy = (v_c[i] / Lcm) / np.abs(ty[np.argmin(np.abs(f_ax - 60.0))])
         
-        if np.abs(v_lossy - t_vpi) > tol_vpi: continue
-        
-        err = ((bw-t_bw)/t_bw)**2 + ((v_lossy-t_vpi)/t_vpi)**2 + ((zc_c[i]-t_zc)/t_zc)**2 + ((nm_c[i]-t_nm)/t_nm)**2
+        # We REMOVED the hard continue breaks here.
+        # Instead, we score how badly they missed the target using Weighted Euclidean Distance.
+        err = ((bw-t_bw)/tol_bw)**2 + ((v_lossy-t_vpi)/tol_vpi)**2 + ((zc_c[i]-t_zc)/tol_zc)**2 + ((nm_c[i]-t_nm)/tol_nm)**2
         final_results.append({'x': X_candidates[i], 'err': err})
         
     prog.empty()
     if not final_results:
-        st.error("❌ Geometries survived electrostatics, but broadband RF physics killed them. Try lowering Bandwidth target or increasing Length/Vpi."); return
+        st.error("❌ The only designs that matched your physics targets violated the S11 Reflection limits for Rt. Try increasing the max Rt bounds."); return
         
     final_results.sort(key=lambda item: item['err'])
     st.session_state['inv_res'] = [r['x'] for r in final_results[:5]]
-    st.session_state['total_found'] = len(final_results)
 
 # ==========================================
 # 5. VISUALIZATION
@@ -299,7 +305,7 @@ if st.button("SYNTHESIZE GEOMETRY", type="primary"): run_inverse_search()
 
 if 'inv_res' in st.session_state:
     st.markdown("---")
-    st.success(f"✅ Scanning complete! Found **{st.session_state['total_found']}** matching geometries. Displaying the top {len(st.session_state['inv_res'])} best matches:")
+    st.success(f"✅ Scanning complete! Displaying the top {len(st.session_state['inv_res'])} best mathematical compromises.")
     
     for i, x in enumerate(st.session_state['inv_res']):
         with st.expander(f"🏅 Candidate {i+1} | L={x[8]:.1f} mm | Rt={x[9]:.1f} Ω", expanded=(i==0)):
@@ -344,6 +350,7 @@ if 'inv_res' in st.session_state:
             ax1.axhline(-3, color='r', ls='--')
             if res['bw'][0] < 150: ax1.plot(res['bw'][0], -3, 'ko'); ax1.annotate(f"{res['bw'][0]:.1f} GHz", (res['bw'][0]+3, -1.5))
             ax1.set(xlabel='Frequency (GHz)', ylabel='S21 (dB)', title='EO Bandwidth', xlim=(0,150), ylim=(-8,1)); ax1.grid(ls=':')
+            
             ax2.plot(res['f_axis'], res['a_nom'], 'g-', lw=2, label='Nominal')
             ax2.fill_between(res['f_axis'], res['a_bc'], res['a_wc'], color='green', alpha=0.2, label='95% CI')
             ax2.set(xlabel='Frequency (GHz)', ylabel='Alpha (dB/cm)', title='RF Attenuation', xlim=(0,150)); ax2.grid(ls=':')
