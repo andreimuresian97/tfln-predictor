@@ -335,8 +335,9 @@ if st.button("🚀 Predict Performance", type="primary"):
         
         # Hardcoded Global MAEs from your cross-validation
         mae_nm = 0.0264
-        mae_zc = 0.7726     # <-- Put your actual Zc MAE here
-        mae_vpi = 0.0130  # <-- Put your actual Vpi MAE here
+        mae_zc = 1.0     # <-- Put your actual Zc MAE here
+        mae_vpi = 0.045  # <-- Put your actual Vpi MAE here
+        mae_alpha60 = 0.15 # <-- Put your actual Alpha 60 MAE here
         
         data = [
             [
@@ -356,6 +357,12 @@ if st.button("🚀 Predict Performance", type="primary"):
                 f"{res['vpi_L'][0]:.3f}", 
                 f"[{res['vpi_L'][0]-1.96*res['vpi_L'][1]:.3f}, {res['vpi_L'][0]+1.96*res['vpi_L'][1]:.3f}]",
                 f"± {mae_vpi:.3f}"
+            ],
+            [
+                "RF Attenuation @ 60 GHz [dB/cm]", 
+                f"{res['alpha_60'][0]:.3f}", 
+                f"[{res['alpha_60'][1]:.3f}, {res['alpha_60'][2]:.3f}]",
+                f"± {mae_alpha60:.3f}"
             ],
             [
                 "EO Bandwidth [GHz]", 
@@ -378,13 +385,12 @@ if st.button("🚀 Predict Performance", type="primary"):
         ]
         st.table(pd.DataFrame(data, columns=["FOM", "Predicted Value", "95% Confidence Interval", "Global MAE"]))
         
-        # S21 Bandwidth Plot
+        # --- PLOT 1: S21 Bandwidth ---
         st.markdown("### 📈 Broadband RF Response")
         fig, ax = plt.subplots(figsize=(8, 4))
-        ax.plot(res['f_axis'], res['s21'], 'b-', lw=2.5, label=f'EO Response (L={length_cm*10} mm, Rt={Rt} Ω)')
+        ax.plot(res['f_axis'], res['s21'], 'b-', lw=2.5, label=f'EO Response (L={length_cm*10:.1f} mm, Rt={Rt} Ω)')
         ax.axhline(-3, color='r', linestyle='--', lw=2)
         
-        # Fix: Use res['bw'][0] for all plotting logic
         if res['bw'][0] < 150.0:
             ax.plot(res['bw'][0], -3, 'ko', markersize=8)
             ax.annotate(f"{res['bw'][0]:.1f} GHz", (res['bw'][0] + 3, -1.5), fontsize=12, fontweight='bold')
@@ -397,3 +403,27 @@ if st.button("🚀 Predict Performance", type="primary"):
         ax.legend()
         plt.tight_layout()
         st.pyplot(fig)
+
+        # --- PLOT 2: RF Attenuation Curve ---
+        st.markdown("### 📉 RF Attenuation Profile")
+        fig_alpha, ax_alpha = plt.subplots(figsize=(8, 4))
+        
+        # Plot the nominal fit
+        ax_alpha.plot(res['f_axis'], res['alpha_curve_nom'], 'g-', lw=2.5, label='Predicted Attenuation')
+        
+        # Fill the 95% Confidence Interval between the best-case (lowest loss) and worst-case (highest loss)
+        ax_alpha.fill_between(res['f_axis'], res['alpha_curve_bc'], res['alpha_curve_wc'], color='green', alpha=0.2, label='95% Confidence Interval')
+        
+        # Mark the 3 GP Anchor points used for the fit
+        idx_20 = np.argmin(np.abs(res['f_axis'] - 20.0))
+        idx_100 = np.argmin(np.abs(res['f_axis'] - 100.0))
+        ax_alpha.scatter([20, 60, 100], [res['alpha_curve_nom'][idx_20], res['alpha_60'][0], res['alpha_curve_nom'][idx_100]], color='black', zorder=5, label='GP Anchors')
+
+        ax_alpha.set_xlabel('Frequency (GHz)')
+        ax_alpha.set_ylabel(r'Attenuation $\alpha$ (dB/cm)')
+        ax_alpha.set_xlim(0, 150)
+        ax_alpha.set_ylim(bottom=0)
+        ax_alpha.grid(True, linestyle=':', alpha=0.7)
+        ax_alpha.legend()
+        plt.tight_layout()
+        st.pyplot(fig_alpha)
