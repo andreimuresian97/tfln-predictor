@@ -229,43 +229,62 @@ def predict_sequentially(geometry, L_cm, Zs, Zs_driver, Rt):
         results['nm'] = (nm, nm_s[0] * meta_nz['scalers_y']['nm_60'].scale_[0])
         results['zc'] = (zc, zc_s[0] * meta_nz['scalers_y']['Zc_60'].scale_[0])
 
-        # --- 3. Alpha Anchors ---
+        # --- 3. Alpha Anchors (WITH UNCERTAINTY PROPAGATION) ---
         progress.progress(0.75, text="Loading RF Attenuation Surrogates...")
         with open(model_dir / "gp_alpha_anchors/scaler_anchors.pkl", 'rb') as f: s_alpha = pickle.load(f)['scaler_X']
         with open(model_dir / "gp_alpha_anchors/gp_alpha_anchors_suite.pkl", 'rb') as f: m_alpha = pickle.load(f)
         X_a = s_alpha.transform(X_9dof)
-        a20 = 10 ** m_alpha['Alpha_20GHz_dB_cm'].predict(X_a)[0]
-        a60 = 10 ** m_alpha['Alpha_60GHz_dB_cm'].predict(X_a)[0]
-        a100 = 10 ** m_alpha['Alpha_100GHz_dB_cm'].predict(X_a)[0]
+        
+        # Extract log10 predictions AND standard deviations
+        y20, std20 = m_alpha['Alpha_20GHz_dB_cm'].predict(X_a, return_std=True)
+        y60, std60 = m_alpha['Alpha_60GHz_dB_cm'].predict(X_a, return_std=True)
+        y100, std100 = m_alpha['Alpha_100GHz_dB_cm'].predict(X_a, return_std=True)
         del m_alpha; gc.collect()
 
-        # --- 4. Cascade Math ---
+        # Nominal Linear Alphas
+        a20_nom, a60_nom, a100_nom = 10**y20[0], 10**y60[0], 10**y100[0]
+        
+        # Worst-Case (Highest Attenuation = Lower Bandwidth Bound)
+        a20_wc = 10**(y20[0] + 1.96*std20[0])
+        a60_wc = 10**(y60[0] + 1.96*std60[0])
+        a100_wc = 10**(y100[0] + 1.96*std100[0])
+
+        # Best-Case (Lowest Attenuation = Upper Bandwidth Bound)
+        a20_bc = 10**(y20[0] - 1.96*std20[0])
+        a60_bc = 10**(y60[0] - 1.96*std60[0])
+        a100_bc = 10**(y100[0] - 1.96*std100[0])
+
+        # --- 4. Cascade Math for all 3 Scenarios ---
         progress.progress(0.95, text="Calculating Broadband Physics...")
-        popt, _ = curve_fit(fit_alpha_scaled, [20.0, 60.0, 100.0], [a20, a60, a100])
         f_axis = np.linspace(1.0, 150.0, 500)
         L_m = L_cm / 100.0
-        
-        s21_lossy, t_lossy = calculate_eo_response(f_axis, fit_alpha_scaled(f_axis, *popt), nm, zc, L_m, 2.27, Zs, Rt)
-        _, t_lossless = calculate_eo_response(f_axis, np.zeros_like(f_axis), nm, zc, L_m, 2.27, Zs, Rt)
-        
-        if s21_lossy[-1] > -3.0: bw = 150.0
-        else:
-            idx = np.where(s21_lossy <= -3.0)[0][0]
-            bw = f_axis[idx-1] + (f_axis[idx]-f_axis[idx-1])*(-3.0-s21_lossy[idx-1])/(s21_lossy[idx]-s21_lossy[idx-1])
 
+        def get_bw(alphas):
+            popt, _ = curve_fit(fit_alpha_scaled, [20.0, 60.0, 100.0], alphas)
+            s21_lossy, _ = calculate_eo_response(f_axis, fit_alpha_scaled(f_axis, *popt), nm, zc, L_m, 2.27, Zs, Rt)
+            if s21_lossy[-1] > -3.0: return 150.0, s21_lossy
+            idx = np.where(s21_lossy <= -3.0)[0][0]
+            return f_axis[idx-1] + (f_axis[idx]-f_axis[idx-1])*(-3.0-s21_lossy[idx-1])/(s21_lossy[idx]-s21_lossy[idx-1]), s21_lossy
+
+        bw_nom, s21_nom = get_bw([a20_nom, a60_nom, a100_nom])
+        bw_lower, _ = get_bw([a20_wc, a60_wc, a100_wc]) # Worst attenuation = lower BW
+        bw_upper, _ = get_bw([a20_bc, a60_bc, a100_bc]) # Best attenuation = upper BW
+
+        # VPI calculations
+        _, t_lossless = calculate_eo_response(f_axis, np.zeros_like(f_axis), nm, zc, L_m, 2.27, Zs, Rt)
+        _, t_lossy = calculate_eo_response(f_axis, fit_alpha_scaled(f_axis, *curve_fit(fit_alpha_scaled, [20.0, 60.0, 100.0], [a20_nom, a60_nom, a100_nom])[0]), nm, zc, L_m, 2.27, Zs, Rt)
+        
         idx_60 = np.argmin(np.abs(f_axis - 60.0))
         v_lossless = results['vpi_L'][0] / np.abs(t_lossless[idx_60])
         v_lossy = results['vpi_L'][0] / np.abs(t_lossy[idx_60])
         
-        # Propagate std linearly for the cascade
         results['vpi_lossless'] = (v_lossless, results['vpi_L'][1] * (v_lossless / results['vpi_L'][0]))
         results['vpi_lossy'] = (v_lossy, results['vpi_L'][1] * (v_lossy / results['vpi_L'][0]))
         
-        results['bw'] = bw
+        results['bw'] = (bw_nom, bw_lower, bw_upper)
         results['f_axis'] = f_axis
-        results['s21'] = s21_lossy
+        results['s21'] = s21_nom
         
-        # Rt Min calculation
         gamma_limit = 10 ** (-10.0 / 20.0) 
         results['rt_min'] = max(Zs_driver * (1 - gamma_limit) / (1 + gamma_limit), zc * (1 - gamma_limit) / (1 + gamma_limit))
 
@@ -308,15 +327,51 @@ if st.button("🚀 Predict Performance", type="primary"):
         
         # Comprehensive FOM Table
         st.markdown("### 📊 Detailed Figures of Merit")
+        
+        # Hardcoded Global MAEs from your cross-validation
+        mae_nm = 0.0264
+        mae_zc = 0.7726   # <-- Put your actual Zc MAE here
+        mae_vpi = 0.0130  # <-- Put your actual Vpi MAE here
+        
         data = [
-            ["Microwave Index (nm)", f"{res['nm'][0]:.4f}", f"[{res['nm'][0]-1.96*res['nm'][1]:.4f}, {res['nm'][0]+1.96*res['nm'][1]:.4f}]"],
-            ["Characteristic Impedance (Z0) [Ω]", f"{res['zc'][0]:.1f}", f"[{res['zc'][0]-1.96*res['zc'][1]:.1f}, {res['zc'][0]+1.96*res['zc'][1]:.1f}]"],
-            ["VPI Length Scaled (Electrostatics) [V]", f"{res['vpi_L'][0]:.3f}", f"[{res['vpi_L'][0]-1.96*res['vpi_L'][1]:.3f}, {res['vpi_L'][0]+1.96*res['vpi_L'][1]:.3f}]"],
-            ["EO Bandwidth [GHz]", f"{res['bw']:.1f}", "N/A (Derived)"],
-            ["VPI @ 60 GHz (Walk-off + Term. Mismatch) [V]", f"{res['vpi_lossless'][0]:.3f}", f"[{res['vpi_lossless'][0]-1.96*res['vpi_lossless'][1]:.3f}, {res['vpi_lossless'][0]+1.96*res['vpi_lossless'][1]:.3f}]"],
-            ["VPI @ 60 GHz (Full RF Attenuation Physics) [V]", f"{res['vpi_lossy'][0]:.3f}", f"[{res['vpi_lossy'][0]-1.96*res['vpi_lossy'][1]:.3f}, {res['vpi_lossy'][0]+1.96*res['vpi_lossy'][1]:.3f}]"],
+            [
+                "Microwave Index (nm)", 
+                f"{res['nm'][0]:.4f}", 
+                f"[{res['nm'][0]-1.96*res['nm'][1]:.4f}, {res['nm'][0]+1.96*res['nm'][1]:.4f}]",
+                f"± {mae_nm:.4f}"
+            ],
+            [
+                "Characteristic Impedance (Z0) [Ω]", 
+                f"{res['zc'][0]:.1f}", 
+                f"[{res['zc'][0]-1.96*res['zc'][1]:.1f}, {res['zc'][0]+1.96*res['zc'][1]:.1f}]",
+                f"± {mae_zc:.2f}"
+            ],
+            [
+                "VPI Length Scaled (Electrostatics) [V]", 
+                f"{res['vpi_L'][0]:.3f}", 
+                f"[{res['vpi_L'][0]-1.96*res['vpi_L'][1]:.3f}, {res['vpi_L'][0]+1.96*res['vpi_L'][1]:.3f}]",
+                f"± {mae_vpi:.3f}"
+            ],
+            [
+                "EO Bandwidth [GHz]", 
+                f"{res['bw'][0]:.1f}", 
+                f"[{res['bw'][1]:.1f}, {res['bw'][2]:.1f}]",
+                "N/A (Derived)"
+            ],
+            [
+                "VPI @ 60 GHz (Walk-off + Term. Mismatch) [V]", 
+                f"{res['vpi_lossless'][0]:.3f}", 
+                f"[{res['vpi_lossless'][0]-1.96*res['vpi_lossless'][1]:.3f}, {res['vpi_lossless'][0]+1.96*res['vpi_lossless'][1]:.3f}]",
+                "N/A (Derived)"
+            ],
+            [
+                "VPI @ 60 GHz (Full RF Attenuation Physics) [V]", 
+                f"{res['vpi_lossy'][0]:.3f}", 
+                f"[{res['vpi_lossy'][0]-1.96*res['vpi_lossy'][1]:.3f}, {res['vpi_lossy'][0]+1.96*res['vpi_lossy'][1]:.3f}]",
+                "N/A (Derived)"
+            ],
         ]
-        st.table(pd.DataFrame(data, columns=["FOM", "Predicted Value", "95% CI"]))
+        st.table(pd.DataFrame(data, columns=["FOM", "Predicted Value", "95% Confidence Interval", "Global MAE"]))
         
         # S21 Bandwidth Plot
         st.markdown("### 📈 Broadband RF Response")
