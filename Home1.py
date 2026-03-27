@@ -33,8 +33,8 @@ def home_page_content():
     """)
     st.write("") 
 
-    # --- MODULE DESCRIPTIONS ---
-    col1, col2, col3 = st.columns(3)
+    # --- MODULE DESCRIPTIONS (2x2 Grid) ---
+    col1, col2 = st.columns(2)
 
     with col1:
         st.page_link(ultimate_predictor_page, label="🔮 Ultimate Predictor", icon="▶️")
@@ -44,6 +44,17 @@ def home_page_content():
         * Electro-Optic Bandwidth (up to 150 GHz)
         * Characteristic Impedance (Zc) & Microwave Index (nm)
         * Dynamic Rt Safety Floor (Ensuring S11 <= -10 dB)
+        """)
+        
+        st.write("")
+        st.write("")
+
+        st.page_link(ultimate_inverse_page, label="🔍 Inverse Synthesizer", icon="▶️")
+        st.markdown(r"""
+        **Goal-Seeking Engine.** Input your exact target broadband FOMs and tolerances. 
+        * Floods 10-DOF space using Quasi-Monte Carlo Sobol sequences.
+        * Sifts through 250,000 combinations via machine learning.
+        * Uses SLSQP Gradient Polishing to back-calculate the exact optimal geometries.
         """)
 
     with col2:
@@ -55,13 +66,15 @@ def home_page_content():
         * Uses SLSQP Gradient Polishing to maximize Zc and perfectly lock velocity matching.
         """)
         
-    with col3:
-        st.page_link(ultimate_inverse_page, label="🔍 Inverse Synthesizer", icon="▶️")
+        st.write("")
+        st.write("")
+
+        st.page_link(ultimate_curves_page, label="📈 Parametric Curves Plotter", icon="▶️")
         st.markdown(r"""
-        **Goal-Seeking Engine.** Input your exact target broadband FOMs and tolerances. 
-        * Floods 10-DOF space using Quasi-Monte Carlo Sobol sequences.
-        * Sifts through 100,000 combinations via machine learning.
-        * Back-calculates the exact optimal geometries that satisfy your desired physics.
+        **Interactive Sweep Visualizer.** Instantly see how sweeping any geometric parameter shifts your figures of merit. 
+        * Isolates individual DOFs while holding your baseline constant.
+        * Dynamically calculates full RF cascades across the sweep.
+        * Renders interactive Plotly curves with shaded 95% Confidence Intervals.
         """)
 
     st.markdown("---")
@@ -81,9 +94,16 @@ home_page = st.Page(home_page_content, title="Home", icon="🏠", default=True)
 ultimate_predictor_page = st.Page("pages1/Ultimate_Predictor.py", title="Ultimate Predictor", icon="🔮")
 ultimate_optimizer_page = st.Page("pages1/Ultimate_Optimizer.py", title="Ultimate Optimizer", icon="🎯")
 ultimate_inverse_page = st.Page("pages1/Ultimate_Inverse_Designer.py", title="Ultimate Inverse Designer", icon="🔍")
+ultimate_curves_page = st.Page("pages1/Ultimate_Curves_Plotter.py", title="Ultimate Curves Plotter", icon="📈")
 
-# Initialize the router with ONLY these pages
-pg = st.navigation([home_page, ultimate_predictor_page, ultimate_optimizer_page, ultimate_inverse_page])
+# Initialize the router with ALL pages
+pg = st.navigation([
+    home_page, 
+    ultimate_predictor_page, 
+    ultimate_optimizer_page, 
+    ultimate_inverse_page, 
+    ultimate_curves_page
+])
 
 # =====================================================================
 # 3. RUN THE APP
