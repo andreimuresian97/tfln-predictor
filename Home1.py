@@ -34,7 +34,7 @@ def home_page_content():
     st.write("") 
 
     # --- MODULE DESCRIPTIONS ---
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
 
     with col1:
         st.page_link(ultimate_predictor_page, label="🔮 Ultimate Predictor", icon="▶️")
@@ -54,6 +54,15 @@ def home_page_content():
         * Maps the Pareto Front (Bandwidth vs. Vpi).
         * Uses SLSQP Gradient Polishing to maximize Zc and perfectly lock velocity matching.
         """)
+        
+    with col3:
+        st.page_link(ultimate_inverse_page, label="🔍 Inverse Synthesizer", icon="▶️")
+        st.markdown(r"""
+        **Goal-Seeking Engine.** Input your exact target broadband FOMs and tolerances. 
+        * Floods 10-DOF space using Quasi-Monte Carlo Sobol sequences.
+        * Sifts through 100,000 combinations via machine learning.
+        * Back-calculates the exact optimal geometries that satisfy your desired physics.
+        """)
 
     st.markdown("---")
 
@@ -71,9 +80,10 @@ def home_page_content():
 home_page = st.Page(home_page_content, title="Home", icon="🏠", default=True)
 ultimate_predictor_page = st.Page("pages1/Ultimate_Predictor.py", title="Ultimate Predictor", icon="🔮")
 ultimate_optimizer_page = st.Page("pages1/Ultimate_Optimizer.py", title="Ultimate Optimizer", icon="🎯")
+ultimate_inverse_page = st.Page("pages1/Ultimate_Inverse_Designer.py", title="Ultimate Inverse Designer", icon="🔍")
 
 # Initialize the router with ONLY these pages
-pg = st.navigation([home_page, ultimate_predictor_page, ultimate_optimizer_page])
+pg = st.navigation([home_page, ultimate_predictor_page, ultimate_optimizer_page, ultimate_inverse_page])
 
 # =====================================================================
 # 3. RUN THE APP
@@ -81,7 +91,7 @@ pg = st.navigation([home_page, ultimate_predictor_page, ultimate_optimizer_page]
 st.set_page_config(
     page_title="Ultimate TFLN Hub",
     page_icon="⚡",
-    layout="wide",  # "wide" looks great with the 2-column layout!
+    layout="wide",  
     initial_sidebar_state="expanded"
 )
 
