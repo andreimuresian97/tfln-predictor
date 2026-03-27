@@ -293,7 +293,7 @@ if st.button("🚀 RUN OPTIMIZATION", type="primary"):
         st.markdown("---")
         st.subheader("📊 Detailed Figures of Merit")
         
-        m_nm, m_zc, m_vpi, m_a = 0.0264, 0.7726, 0.0130, 0.15 # Replace with true MAEs
+        m_nm, m_zc, m_vpi, m_a = 0.0264, 0.7726, 0.0130, 0.3559 # Replace with true MAEs
         data = [
             ["Microwave Index (nm)", f"{res['nm'][0]:.4f}", f"[{res['nm'][0]-1.96*res['nm'][1]:.4f}, {res['nm'][0]+1.96*res['nm'][1]:.4f}]", f"± {m_nm:.4f}"],
             ["Impedance Zc [Ω]", f"{res['zc'][0]:.1f}", f"[{res['zc'][0]-1.96*res['zc'][1]:.1f}, {res['zc'][0]+1.96*res['zc'][1]:.1f}]", f"± {m_zc:.2f}"],
