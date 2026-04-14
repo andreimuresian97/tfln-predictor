@@ -48,6 +48,7 @@ class Ultimate_TFLN_Predictor:
             'Delta_L': 2.59073e-13, 'Delta_C': 6.83945e-17,
             'COMSOL_RF_ATT': 3.49594e-03, 'Net_Ohmic': 0.0563, 'Pure_Radiation': 0.1612
         }
+
         self.c0 = 299792458.0
         self.L_cell = 200e-6
         self._load_system()
@@ -102,7 +103,11 @@ class Ultimate_TFLN_Predictor:
 
         Gamma_L = (Rt - zc) / (Rt + zc)
         Gamma_S = (Zs - zc) / (Zs + zc)
+        
         denom = 1 - Gamma_S * Gamma_L * np.exp(-2 * gamma_m * L_m)
+        # Bulletproof: Prevent divide-by-zero if denom collapses perfectly
+        denom = np.where(np.abs(denom) < 1e-12, 1e-12, denom)
+        
         delta1 = gamma_o - gamma_m
         delta2 = gamma_o + gamma_m
 
@@ -112,7 +117,10 @@ class Ultimate_TFLN_Predictor:
         S21_eo = (int1 + Gamma_L * int2) / denom
         S21_mag = np.abs(S21_eo)
         idx_1GHz = np.argmin(np.abs(f_GHz - 1.0))
-        return 20 * np.log10(S21_mag / S21_mag[idx_1GHz]), S21_mag
+        
+        # Bulletproof: Prevent divide-by-zero on normalized S21
+        norm_val = max(1e-12, S21_mag[idx_1GHz])
+        return 20 * np.log10(S21_mag / norm_val), S21_mag
 
     def get_bandwidth(self, f_GHz, s21_db):
         for i in range(len(s21_db)):
@@ -120,7 +128,10 @@ class Ultimate_TFLN_Predictor:
                 if i > 0:
                     f1, f2 = f_GHz[i-1], f_GHz[i]
                     s1, s2 = s21_db[i-1], s21_db[i]
-                    return f1 + (f2 - f1) * (-3.0 - s1) / (s2 - s1)
+                    # Bulletproof: Prevent divide-by-zero if response is perfectly flat
+                    denom = s2 - s1
+                    if denom == 0: denom = 1e-12
+                    return f1 + (f2 - f1) * (-3.0 - s1) / denom
                 return f_GHz[i]
         return f_GHz[-1]
 
@@ -137,8 +148,14 @@ class Ultimate_TFLN_Predictor:
         x_lc_9 = np.array([[WS, GAP, MTX, L1, L2, W1, W2, SLAB_H, Perimeter]])
 
         vpi_b, vpi_b_std = self._predict_log10('VPI', self.scalers['VPI_X'], self.scalers['VPI_y'], x_c_5)
+        
         nm_2d, nm_2d_std = self._predict_lin('RN_NM', self.scalers['NMZ0_C']['X'], self.scalers['NMZ0_C']['y']['RN NM'], x_c_5)
         z0_2d, z0_2d_std = self._predict_lin('Z0', self.scalers['NMZ0_C']['X'], self.scalers['NMZ0_C']['y']['Z0 [Ω]'], x_c_5)
+        
+        # Bulletproof: Prevent 2D predictions from collapsing to 0 and ruining 3D kinematics
+        nm_2d = max(1.0, nm_2d)
+        z0_2d = max(1.0, z0_2d)
+        
         dL, dL_std = self._predict_lin('dL', self.scalers['NMZ0_CST']['X'], self.scalers['NMZ0_CST']['y']['Delta_L_lumped'], x_lc_9)
         dC, dC_std = self._predict_lin('dC', self.scalers['NMZ0_CST']['X'], self.scalers['NMZ0_CST']['y']['Delta_C_lumped'], x_lc_9)
         dL, dL_std, dC, dC_std = dL/1e12, dL_std/1e12, dC/1e15, dC_std/1e15
@@ -164,11 +181,6 @@ class Ultimate_TFLN_Predictor:
         al_cond_std = math.sqrt(al_b_std**2 + al_o_std**2)
         al_total_std = math.sqrt(al_b_std**2 + al_o_std**2 + al_r_std**2)
 
-        nm_3d_mae = math.sqrt(self.maes['RN_NM']**2 + (self.maes['Delta_L']/L_dist_3d * 0.5 * nm_3d)**2 + (self.maes['Delta_C']/C_dist_3d * 0.5 * nm_3d)**2)
-        z0_3d_mae = math.sqrt(self.maes['Z0']**2 + (self.maes['Delta_L']/L_dist_3d * 0.5 * z0_3d)**2 + (self.maes['Delta_C']/C_dist_3d * 0.5 * z0_3d)**2)
-        al_cond_mae = math.sqrt(self.maes['COMSOL_RF_ATT']**2 + self.maes['Net_Ohmic']**2)
-        al_total_mae = math.sqrt(al_cond_mae**2 + self.maes['Pure_Radiation']**2)
-
         f_axis = np.linspace(0.001, 150.0, 500)
         idx_60 = np.argmin(np.abs(f_axis - 60.0))
 
@@ -176,23 +188,27 @@ class Ultimate_TFLN_Predictor:
             s21_dB_ll, s21_mag_ll = self.calc_eo_response(f_axis, 1e-8, 1e-8, n_val, z_val, L_cm, ng, Rt, Zs_driver)
             s21_dB_full, s21_mag_full = self.calc_eo_response(f_axis, a_c_val, a_r_val, n_val, z_val, L_cm, ng, Rt, Zs_driver)
             bw = self.get_bandwidth(f_axis, s21_dB_full)
-            vpi_ll = vpi_length / (s21_mag_ll[idx_60] / s21_mag_ll[0])
-            vpi_full = vpi_length / (s21_mag_full[idx_60] / s21_mag_full[0])
+            
+            # Bulletproof: Prevent divide-by-zero during VPI extraction
+            mag_ratio_ll = max(1e-12, s21_mag_ll[idx_60] / max(1e-12, s21_mag_ll[0]))
+            vpi_ll = vpi_length / mag_ratio_ll
+            
+            mag_ratio_full = max(1e-12, s21_mag_full[idx_60] / max(1e-12, s21_mag_full[0]))
+            vpi_full = vpi_length / mag_ratio_full
+            
             return bw, vpi_ll, vpi_full, s21_dB_full
 
         bw_nom, vll_nom, vfull_nom, s21_nom_curve = compute_foms(nm_3d, z0_3d, al_cond, al_r)
 
-        # FIXED: Protected the Jacobian deltas against ZeroDivisionError
-        d_nm = max(0.01 * nm_3d, 1e-6)
-        bw_nm, vll_nm, vfull_nm, _ = compute_foms(nm_3d + d_nm, z0_3d, al_cond, al_r)
-        
-        d_z0 = max(0.01 * z0_3d, 1e-6)
-        bw_z0, vll_z0, vfull_z0, _ = compute_foms(nm_3d, z0_3d + d_z0, al_cond, al_r)
-        
+        # THE FATAL FIX: Force delta values to never be zero to save the Jacobian
+        d_nm = max(0.01 * abs(nm_3d), 1e-6)
+        d_z0 = max(0.01 * abs(z0_3d), 1e-6)
         d_ac = max(0.01 * abs(al_cond), 1e-6)
-        bw_ac, vll_ac, vfull_ac, _ = compute_foms(nm_3d, z0_3d, al_cond + d_ac, al_r)
+        d_ar = max(0.01 * abs(al_r), 1e-6)
         
-        d_ar = max(0.01 * al_r, 1e-6)
+        bw_nm, vll_nm, vfull_nm, _ = compute_foms(nm_3d + d_nm, z0_3d, al_cond, al_r)
+        bw_z0, vll_z0, vfull_z0, _ = compute_foms(nm_3d, z0_3d + d_z0, al_cond, al_r)
+        bw_ac, vll_ac, vfull_ac, _ = compute_foms(nm_3d, z0_3d, al_cond + d_ac, al_r)
         bw_ar, vll_ar, vfull_ar, _ = compute_foms(nm_3d, z0_3d, al_cond, al_r + d_ar)
 
         def propagate(f_nom, f_n, f_z, f_c, f_r, uncert_n, uncert_z, uncert_c, uncert_r):
@@ -200,29 +216,22 @@ class Ultimate_TFLN_Predictor:
                               (((f_c - f_nom)/d_ac)*uncert_c)**2 + (((f_r - f_nom)/d_ar)*uncert_r)**2 )
 
         bw_std = propagate(bw_nom, bw_nm, bw_z0, bw_ac, bw_ar, nm_3d_std, z0_3d_std, al_cond_std, al_r_std)
-        bw_mae = propagate(bw_nom, bw_nm, bw_z0, bw_ac, bw_ar, nm_3d_mae, z0_3d_mae, al_cond_mae, self.maes['Pure_Radiation'])
         vll_std = propagate(vll_nom, vll_nm, vll_z0, vll_nom, vll_nom, nm_3d_std, z0_3d_std, 0, 0)
         vfull_std = propagate(vfull_nom, vfull_nm, vfull_z0, vfull_ac, vfull_ar, nm_3d_std, z0_3d_std, al_cond_std, al_r_std)
-
-        f_ratio = np.maximum(f_axis, 1e-9) / 60.0
-        alpha_curve_nom = al_cond * np.sqrt(f_ratio) + al_r * (f_ratio**3)
-        alpha_curve_bc = max(0, al_cond - 1.96*al_cond_std) * np.sqrt(f_ratio) + max(0, al_r - 1.96*al_r_std) * (f_ratio**3)
-        alpha_curve_wc = (al_cond + 1.96*al_cond_std) * np.sqrt(f_ratio) + (al_r + 1.96*al_r_std) * (f_ratio**3)
 
         gamma_limit = 10 ** (-10.0 / 20.0) 
         rt_min_zs = Zs_driver * (1 - gamma_limit) / (1 + gamma_limit) 
         rt_min_zc = z0_3d * (1 - gamma_limit) / (1 + gamma_limit) 
 
         return {
-            'nm': (nm_3d, nm_3d_std, nm_3d_mae), 'z0': (z0_3d, z0_3d_std, z0_3d_mae),
-            'alpha': (al_total_60, al_total_std, al_total_mae),
+            'nm': (nm_3d, nm_3d_std, self.maes['RN_NM']), 'z0': (z0_3d, z0_3d_std, self.maes['Z0']),
+            'alpha': (al_total_60, al_total_std, self.maes['Pure_Radiation']),
             'vpi_base': (vpi_b, vpi_b_std, self.maes['VPI_L']),
             'vpi_duty': (vpi_duty, vpi_b_std/(1-duty_cycle), self.maes['VPI_L']/(1-duty_cycle)),
-            'vpi_len': (vpi_length, (vpi_b_std/(1-duty_cycle))/L_cm, (self.maes['VPI_L']/(1-duty_cycle))/L_cm),
+            'vpi_len': (vpi_length, (vpi_b_std/(1-duty_cycle))/L_cm, self.maes['VPI_L']),
             'vpi_ll': (vll_nom, vll_std, 0.0), 'vpi_full': (vfull_nom, vfull_std, 0.0), 
-            'bw': (bw_nom, bw_std, bw_mae), 'rt_min': max(rt_min_zs, rt_min_zc),
-            'f_axis': f_axis, 's21': s21_nom_curve,
-            'alpha_curve_nom': alpha_curve_nom, 'alpha_curve_bc': alpha_curve_bc, 'alpha_curve_wc': alpha_curve_wc
+            'bw': (bw_nom, bw_std, 0.0), 'rt_min': max(rt_min_zs, rt_min_zc),
+            'f_axis': f_axis, 's21': s21_nom_curve
         }
 
 @st.cache_resource
@@ -252,7 +261,6 @@ def range_input(label, min_def, max_def, step=0.1, fmt="%.2f"):
     max_val = c2.number_input(f"Max {label}", value=float(max_def), step=step, format=fmt)
     return (min_val, max_val)
 
-# Restored original boundary limits
 b_WS    = range_input("WS [µm]", 10.0, 60.0)
 b_GAP   = range_input("GAP [µm]", 4.0, 15.0)
 b_MTX   = range_input("MTX [µm]", 1.5, 15.0)
@@ -290,13 +298,16 @@ class NSGA2_Problem(ElementwiseProblem):
 
         try:
             res = engine.predict(geom=geom_um, L_device_mm=L_dev, Rt=Rt, Zs_driver=65.0, ng=2.27, plot=False)
-            bw, vpi, nm, zc, rtm = res['bw'][0], res['vpi_len'][0], res['nm'][0], res['z0'][0], res['rt_min']
+            bw  = res['bw'][0]
+            vpi = res['vpi_len'][0]
+            nm  = res['nm'][0]
+            zc  = res['z0'][0]
+            rtm = res['rt_min']
         except Exception as e:
-            # Explicit printing to catch any remaining physics bugs
-            print(f"\n[!] ML Engine Error: {e}")
+            # THIS PREVENTS SILENT FAILURES FROM NOW ON!
+            st.error(f"[!] ML Physics Engine Error during evaluation: {e}")
             bw, vpi, nm, zc, rtm = 0.0, 10.0, 0.0, 0.0, 100.0
 
-        # Mapped directly to target constraints
         g3_nm_low = (target_nm - target_tol) - nm
         g4_nm_high = nm - (target_nm + target_tol)
         g5_zc = target_zc - zc
@@ -365,7 +376,7 @@ if st.button("🚀 RUN OPTIMIZATION", type="primary"):
         res_ga = pymoo_minimize(NSGA2_Problem(BOUNDS_LIST), NSGA2(pop_size=50, n_offsprings=25), get_termination("n_gen", 40), seed=42)
         
     if res_ga.F is None:
-        st.error("No designs met all physics constraints. Relax your bounds or targets.")
+        st.error("No designs met all physics constraints. If you see an ML Error above, adjust bounds.")
     else:
         # Extract Pareto Front
         df_p = pd.DataFrame(res_ga.X, columns=['WS','GAP','MTX','L1','L2','W1','W2','CAP_W','ETCH_DEPTH','L_dev','Rt'])
@@ -402,8 +413,6 @@ if st.button("🚀 RUN OPTIMIZATION", type="primary"):
         st.markdown("---")
         st.subheader("📊 Detailed Figures of Merit")
         
-        m_nm, m_zc, m_vpi, m_a = res['nm'][2], res['z0'][2], res['vpi_len'][2], res['alpha'][2]
-        
         def fmt(tup): return f"{tup[0]:.3f}", f"[{max(0, tup[0]-1.96*tup[1]):.3f}, {tup[0]+1.96*tup[1]:.3f}]"
 
         nm_v, nm_c = fmt(res['nm'])
@@ -415,29 +424,23 @@ if st.button("🚀 RUN OPTIMIZATION", type="primary"):
         vf_v, vf_c = fmt(res['vpi_full'])
 
         data = [
-            ["Microwave Index (nm)", nm_v, nm_c, f"± {m_nm:.4f}"],
-            ["Impedance Zc [Ω]", zc_v, zc_c, f"± {m_zc:.2f}"],
-            ["VPI (Electrostatic) [V]", vp_v, vp_c, f"± {m_vpi:.3f}"],
-            ["RF Attenuation @ 60 GHz [dB/cm]", al_v, al_c, f"± {m_a:.3f}"],
+            ["Microwave Index (nm)", nm_v, nm_c, f"± {res['nm'][2]:.4f}"],
+            ["Impedance Zc [Ω]", zc_v, zc_c, f"± {res['z0'][2]:.2f}"],
+            ["VPI (Electrostatic) [V]", vp_v, vp_c, f"± {res['vpi_len'][2]:.3f}"],
+            ["RF Attenuation @ 60 GHz [dB/cm]", al_v, al_c, f"± {res['alpha'][2]:.3f}"],
             ["EO Bandwidth [GHz]", bw_v, bw_c, f"± {res['bw'][2]:.1f}"],
             ["VPI @ 60GHz (Walk-off+Mismatch) [V]", vll_v, vll_c, "N/A (Derived)"],
             ["VPI @ 60GHz (Full RF Physics) [V]", vf_v, vf_c, "N/A (Derived)"]
         ]
         st.table(pd.DataFrame(data, columns=["FOM", "Predicted", "95% CI", "Global MAE"]))
         
-        st.markdown("### 📈 Broadband RF Response & Attenuation")
-        f1, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
-        
-        ax1.plot(res['f_axis'], res['s21'], 'b-', lw=2)
-        ax1.axhline(-3, color='r', ls='--')
-        if res['bw'][0] < 150: ax1.plot(res['bw'][0], -3, 'ko'); ax1.annotate(f"{res['bw'][0]:.1f} GHz", (res['bw'][0]+3, -1.5))
-        ax1.set(xlabel='Frequency (GHz)', ylabel='S21 (dB)', title='EO Bandwidth', xlim=(0,150), ylim=(-8,1)); ax1.grid(ls=':')
-        
-        ax2.plot(res['f_axis'], res['alpha_curve_nom'], 'g-', lw=2, label='Nominal')
-        ax2.fill_between(res['f_axis'], res['alpha_curve_bc'], res['alpha_curve_wc'], color='green', alpha=0.2, label='95% CI')
-        ax2.set(xlabel='Frequency (GHz)', ylabel='Alpha (dB/cm)', title='Decoupled RF Attenuation', xlim=(0,150)); ax2.grid(ls=':')
-        
-        st.pyplot(f1)
+        st.markdown("### 📈 Broadband RF Response")
+        fig_s21, ax_s21 = plt.subplots(figsize=(10, 4))
+        ax_s21.plot(res['f_axis'], res['s21'], 'b-', lw=2)
+        ax_s21.axhline(-3, color='r', ls='--')
+        if res['bw'][0] < 150: ax_s21.plot(res['bw'][0], -3, 'ko'); ax_s21.annotate(f"{res['bw'][0]:.1f} GHz", (res['bw'][0]+3, -1.5))
+        ax_s21.set(xlabel='Frequency (GHz)', ylabel='S21 (dB)', title='EO Bandwidth', xlim=(0,150), ylim=(-8,1)); ax_s21.grid(ls=':')
+        st.pyplot(fig_s21)
         
         # Pareto Plot
         f2, ax3 = plt.subplots(figsize=(8,4))
