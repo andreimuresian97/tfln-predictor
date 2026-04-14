@@ -1,24 +1,24 @@
 """
 ================================================================================
-🎯 ULTIMATE TFLN 11-DOF INVERSE SYNTHESIZER (STREAMLIT APP)
-NSGA-II Global Pareto Search + SLSQP Gradient Polishing
+TFLN 11-DOF ULTIMATE OPTIMIZER: NSGA-II PARETO + SLSQP POLISH
 ================================================================================
 """
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.optimize import minimize as scipy_minimize
 from pymoo.core.problem import ElementwiseProblem
 from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.optimize import minimize as pymoo_minimize
 from pymoo.termination import get_termination
+from scipy.optimize import minimize as scipy_minimize
+import pickle
+import math
 import io
+import base64
+from pathlib import Path
 import warnings
-
-# Import the new, highly accurate Ultimate Predictor
-# Ensure this matches the name of your python file (e.g., ultimate_predictor.py)
-from ultimate_predictor import Ultimate_TFLN_Predictor
 
 warnings.filterwarnings('ignore')
 
@@ -29,12 +29,195 @@ st.title("🎯 Ultimate TFLN 11-DOF Optimizer")
 st.markdown("""
 **Find the absolute physical limit of your design.**
 This engine uses a **Memetic Algorithm** (NSGA-II Global Pareto Search + SLSQP Gradient Polishing)
-to map the ultimate trade-offs between Bandwidth and VPI, mathematically locking the velocity match while maximizing characteristic impedance ($Z_c$).
+to map the ultimate trade-offs between Bandwidth and VPI, mathematically locking the velocity match while maximizing characteristic impedance (Zc).
 """)
 
-# ==========================================
-# 2. CACHED ENGINE LOADER
-# ==========================================
+# =====================================================================
+# 2. THE ULTIMATE PREDICTOR ENGINE (Embedded for Streamlit Cache)
+# =====================================================================
+class Ultimate_TFLN_Predictor:
+    def __init__(self, dir_vpi="gp_surrogate_results_ultimate_500LHS/GP_files_Vpi", 
+                 dir_nm_z0="gp_surrogate_results_ultimate_500LHS/GP_files_nm_Z0", 
+                 dir_alpha="gp_surrogate_results_ultimate_500LHS/GP_files_RF_alpha"):
+        
+        self.dirs = {'VPI': Path(dir_vpi), 'NM_Z0': Path(dir_nm_z0), 'ALPHA': Path(dir_alpha)}
+        self.models, self.scalers = {}, {}
+        
+        self.maes = {
+            'VPI_L': 0.0866, 'RN_NM': 5.77651e-04, 'Z0': 2.51204e-02,
+            'Delta_L': 2.59073e-13, 'Delta_C': 6.83945e-17,
+            'COMSOL_RF_ATT': 3.49594e-03, 'Net_Ohmic': 0.0563, 'Pure_Radiation': 0.1612
+        }
+
+        self.c0 = 299792458.0
+        self.L_cell = 200e-6
+        self._load_system()
+
+    def _load_system(self):
+        with open(self.dirs['VPI'] / "scalers_COMSOL.pkl", 'rb') as f:
+            d = pickle.load(f); self.scalers['VPI_X'], self.scalers['VPI_y'] = d['X'], d['y']['VPI_L [V*cm]']
+        with open(self.dirs['VPI'] / "gp_model_VPI_L_V_cm.pkl", 'rb') as f: self.models['VPI'] = pickle.load(f)
+
+        with open(self.dirs['NM_Z0'] / "scalers_COMSOL.pkl", 'rb') as f: self.scalers['NMZ0_C'] = pickle.load(f)
+        with open(self.dirs['NM_Z0'] / "scalers_CST.pkl", 'rb') as f: self.scalers['NMZ0_CST'] = pickle.load(f)
+        for m in [('RN_NM', 'gp_model_RN_NM.pkl'), ('Z0', 'gp_model_Z0_Ω.pkl'), ('dL', 'gp_model_Delta_L_lumped.pkl'), ('dC', 'gp_model_Delta_C_lumped.pkl')]:
+            with open(self.dirs['NM_Z0'] / m[1], 'rb') as f: self.models[m[0]] = pickle.load(f)
+
+        with open(self.dirs['ALPHA'] / "scalers_COMSOL.pkl", 'rb') as f:
+            d = pickle.load(f); self.scalers['AL_C_X'], self.scalers['AL_C_y'] = d['X'], d['y']['RF ATT [dB/cm]']
+        with open(self.dirs['ALPHA'] / "scalers_Net_Ohmic_Penalty.pkl", 'rb') as f:
+            d = pickle.load(f); self.scalers['AL_O_X'], self.scalers['AL_O_y'] = d['scaler_X'], d['scaler_y']
+        with open(self.dirs['ALPHA'] / "scalers_Pure_Radiation.pkl", 'rb') as f:
+            d = pickle.load(f); self.scalers['AL_R_X'], self.scalers['AL_R_y'] = d['scaler_X'], d['scaler_y']
+        for m in [('AL_C', 'gp_model_RF_ATT_dB_cm_COMSOL.pkl'), ('AL_O', 'gp_model_Net_Ohmic_Penalty.pkl'), ('AL_R', 'gp_model_Pure_Radiation.pkl')]:
+            with open(self.dirs['ALPHA'] / m[1], 'rb') as f: self.models[m[0]] = pickle.load(f)
+
+    def _predict_log10(self, model_key, scaler_X, scaler_y, X_input):
+        X_scaled = scaler_X.transform(X_input)
+        y_norm, y_std = self.models[model_key].predict(X_scaled, return_std=True)
+        y_log = scaler_y.inverse_transform(y_norm.reshape(-1, 1)).ravel()[0]
+        std_log = y_std[0] * scaler_y.scale_[0]
+        val = (10 ** y_log) - 1e-15
+        low = max(0.0, (10 ** (y_log - 1.96 * std_log)) - 1e-15)
+        high = (10 ** (y_log + 1.96 * std_log)) - 1e-15
+        return val, (high - low) / (2 * 1.96)
+
+    def _predict_lin(self, model_key, scaler_X, scaler_y, X_input, limit_zero=False):
+        X_scaled = scaler_X.transform(X_input)
+        y_norm, y_std = self.models[model_key].predict(X_scaled, return_std=True)
+        if isinstance(scaler_y, dict): pass
+        val = scaler_y.inverse_transform(y_norm.reshape(-1, 1)).ravel()[0]
+        std = y_std[0] * scaler_y.scale_[0]
+        if limit_zero: val = max(0.0, val)
+        return val, std
+
+    def calc_eo_response(self, f_GHz, a_cond, a_rad, nm, zc, L_cm, ng, Rt, Zs):
+        L_m = L_cm / 100.0
+        f_ratio = np.maximum(f_GHz, 1e-9) / 60.0
+        alpha_dB_cm = a_cond * np.sqrt(f_ratio) + a_rad * (f_ratio**3)
+        alpha_np_m = alpha_dB_cm * (100.0 / 8.686)
+        
+        beta_rf = 2 * np.pi * f_GHz * 1e9 * nm / self.c0
+        gamma_m = alpha_np_m + 1j * beta_rf
+        gamma_o = 1j * 2 * np.pi * f_GHz * 1e9 * ng / self.c0
+
+        Gamma_L = (Rt - zc) / (Rt + zc)
+        Gamma_S = (Zs - zc) / (Zs + zc)
+        denom = 1 - Gamma_S * Gamma_L * np.exp(-2 * gamma_m * L_m)
+        delta1 = gamma_o - gamma_m
+        delta2 = gamma_o + gamma_m
+
+        int1 = np.where(np.abs(delta1) < 1e-12, L_m, (np.exp(delta1 * L_m) - 1) / delta1)
+        int2 = np.where(np.abs(delta2) < 1e-12, L_m * np.exp(-2 * gamma_m * L_m), np.exp(-2 * gamma_m * L_m) * (np.exp(delta2 * L_m) - 1) / delta2)
+
+        S21_eo = (int1 + Gamma_L * int2) / denom
+        S21_mag = np.abs(S21_eo)
+        idx_1GHz = np.argmin(np.abs(f_GHz - 1.0))
+        return 20 * np.log10(S21_mag / S21_mag[idx_1GHz]), S21_mag
+
+    def get_bandwidth(self, f_GHz, s21_db):
+        for i in range(len(s21_db)):
+            if s21_db[i] <= -3.0:
+                if i > 0:
+                    f1, f2 = f_GHz[i-1], f_GHz[i]
+                    s1, s2 = s21_db[i-1], s21_db[i]
+                    return f1 + (f2 - f1) * (-3.0 - s1) / (s2 - s1)
+                return f_GHz[i]
+        return f_GHz[-1]
+
+    def predict(self, geom, L_device_mm, Rt, Zs_driver=65.0, ng=2.27, plot=False):
+        WS, GAP, MTX, L1, L2, W1, W2, CAP_W, ETCH_DEPTH = geom
+        L_cm = L_device_mm / 10.0
+        SLAB_H = 0.460 - ETCH_DEPTH
+        Perimeter = L1 + L2 + W1 + W2
+        Bragg_Proxy = Perimeter * (WS / GAP)
+
+        x_c_5  = np.array([[WS, GAP, MTX, CAP_W, ETCH_DEPTH]])
+        x_c_8  = np.array([[WS, GAP, MTX, L1, L2, W1, W2, ETCH_DEPTH]])
+        x_c_9  = np.array([[WS, GAP, MTX, L1, L2, W1, W2, ETCH_DEPTH, Bragg_Proxy]])
+        x_lc_9 = np.array([[WS, GAP, MTX, L1, L2, W1, W2, SLAB_H, Perimeter]])
+
+        vpi_b, vpi_b_std = self._predict_log10('VPI', self.scalers['VPI_X'], self.scalers['VPI_y'], x_c_5)
+        nm_2d, nm_2d_std = self._predict_lin('RN_NM', self.scalers['NMZ0_C']['X'], self.scalers['NMZ0_C']['y']['RN NM'], x_c_5)
+        z0_2d, z0_2d_std = self._predict_lin('Z0', self.scalers['NMZ0_C']['X'], self.scalers['NMZ0_C']['y']['Z0 [Ω]'], x_c_5)
+        dL, dL_std = self._predict_lin('dL', self.scalers['NMZ0_CST']['X'], self.scalers['NMZ0_CST']['y']['Delta_L_lumped'], x_lc_9)
+        dC, dC_std = self._predict_lin('dC', self.scalers['NMZ0_CST']['X'], self.scalers['NMZ0_CST']['y']['Delta_C_lumped'], x_lc_9)
+        dL, dL_std, dC, dC_std = dL/1e12, dL_std/1e12, dC/1e15, dC_std/1e15
+
+        al_b, al_b_std = self._predict_log10('AL_C', self.scalers['AL_C_X'], self.scalers['AL_C_y'], x_c_5)
+        al_o, al_o_std = self._predict_lin('AL_O', self.scalers['AL_O_X'], self.scalers['AL_O_y'], x_c_8)
+        al_r, al_r_std = self._predict_lin('AL_R', self.scalers['AL_R_X'], self.scalers['AL_R_y'], x_c_9, limit_zero=True)
+
+        L_dist_3d = max(1e-15, (z0_2d * nm_2d / self.c0) + (dL / self.L_cell))
+        C_dist_3d = max(1e-15, (nm_2d / (z0_2d * self.c0)) + (dC / self.L_cell))
+        nm_3d = self.c0 * math.sqrt(L_dist_3d * C_dist_3d)
+        z0_3d = math.sqrt(L_dist_3d / C_dist_3d)
+        
+        al_cond = al_b + al_o
+        al_total_60 = al_cond + al_r
+
+        duty_cycle = L1 / 200.0
+        vpi_duty = vpi_b / (1.0 - duty_cycle)
+        vpi_length = vpi_duty / L_cm
+
+        nm_3d_std = math.sqrt(nm_2d_std**2 + (dL_std/L_dist_3d * 0.5 * nm_3d)**2 + (dC_std/C_dist_3d * 0.5 * nm_3d)**2)
+        z0_3d_std = math.sqrt(z0_2d_std**2 + (dL_std/L_dist_3d * 0.5 * z0_3d)**2 + (dC_std/C_dist_3d * 0.5 * z0_3d)**2)
+        al_cond_std = math.sqrt(al_b_std**2 + al_o_std**2)
+        al_total_std = math.sqrt(al_b_std**2 + al_o_std**2 + al_r_std**2)
+
+        nm_3d_mae = math.sqrt(self.maes['RN_NM']**2 + (self.maes['Delta_L']/L_dist_3d * 0.5 * nm_3d)**2 + (self.maes['Delta_C']/C_dist_3d * 0.5 * nm_3d)**2)
+        z0_3d_mae = math.sqrt(self.maes['Z0']**2 + (self.maes['Delta_L']/L_dist_3d * 0.5 * z0_3d)**2 + (self.maes['Delta_C']/C_dist_3d * 0.5 * z0_3d)**2)
+        al_cond_mae = math.sqrt(self.maes['COMSOL_RF_ATT']**2 + self.maes['Net_Ohmic']**2)
+        al_total_mae = math.sqrt(al_cond_mae**2 + self.maes['Pure_Radiation']**2)
+
+        f_axis = np.linspace(0.001, 150.0, 500)
+        idx_60 = np.argmin(np.abs(f_axis - 60.0))
+
+        def compute_foms(n_val, z_val, a_c_val, a_r_val):
+            s21_dB_ll, s21_mag_ll = self.calc_eo_response(f_axis, 1e-8, 1e-8, n_val, z_val, L_cm, ng, Rt, Zs_driver)
+            s21_dB_full, s21_mag_full = self.calc_eo_response(f_axis, a_c_val, a_r_val, n_val, z_val, L_cm, ng, Rt, Zs_driver)
+            bw = self.get_bandwidth(f_axis, s21_dB_full)
+            vpi_ll = vpi_length / (s21_mag_ll[idx_60] / s21_mag_ll[0])
+            vpi_full = vpi_length / (s21_mag_full[idx_60] / s21_mag_full[0])
+            return bw, vpi_ll, vpi_full, s21_dB_full
+
+        bw_nom, vll_nom, vfull_nom, s21_nom_curve = compute_foms(nm_3d, z0_3d, al_cond, al_r)
+
+        d_nm = 0.01 * nm_3d; bw_nm, vll_nm, vfull_nm, _ = compute_foms(nm_3d + d_nm, z0_3d, al_cond, al_r)
+        d_z0 = 0.01 * z0_3d; bw_z0, vll_z0, vfull_z0, _ = compute_foms(nm_3d, z0_3d + d_z0, al_cond, al_r)
+        d_ac = 0.01 * al_cond; bw_ac, vll_ac, vfull_ac, _ = compute_foms(nm_3d, z0_3d, al_cond + d_ac, al_r)
+        d_ar = max(0.01 * al_r, 1e-4); bw_ar, vll_ar, vfull_ar, _ = compute_foms(nm_3d, z0_3d, al_cond, al_r + d_ar)
+
+        def propagate(f_nom, f_n, f_z, f_c, f_r, uncert_n, uncert_z, uncert_c, uncert_r):
+            return math.sqrt( (((f_n - f_nom)/d_nm)*uncert_n)**2 + (((f_z - f_nom)/d_z0)*uncert_z)**2 +
+                              (((f_c - f_nom)/d_ac)*uncert_c)**2 + (((f_r - f_nom)/d_ar)*uncert_r)**2 )
+
+        bw_std = propagate(bw_nom, bw_nm, bw_z0, bw_ac, bw_ar, nm_3d_std, z0_3d_std, al_cond_std, al_r_std)
+        bw_mae = propagate(bw_nom, bw_nm, bw_z0, bw_ac, bw_ar, nm_3d_mae, z0_3d_mae, al_cond_mae, self.maes['Pure_Radiation'])
+        vll_std = propagate(vll_nom, vll_nm, vll_z0, vll_nom, vll_nom, nm_3d_std, z0_3d_std, 0, 0)
+        vfull_std = propagate(vfull_nom, vfull_nm, vfull_z0, vfull_ac, vfull_ar, nm_3d_std, z0_3d_std, al_cond_std, al_r_std)
+
+        f_ratio = np.maximum(f_axis, 1e-9) / 60.0
+        alpha_curve_nom = al_cond * np.sqrt(f_ratio) + al_r * (f_ratio**3)
+        alpha_curve_bc = max(0, al_cond - 1.96*al_cond_std) * np.sqrt(f_ratio) + max(0, al_r - 1.96*al_r_std) * (f_ratio**3)
+        alpha_curve_wc = (al_cond + 1.96*al_cond_std) * np.sqrt(f_ratio) + (al_r + 1.96*al_r_std) * (f_ratio**3)
+
+        gamma_limit = 10 ** (-10.0 / 20.0) 
+        rt_min_zs = Zs_driver * (1 - gamma_limit) / (1 + gamma_limit) 
+        rt_min_zc = z0_3d * (1 - gamma_limit) / (1 + gamma_limit) 
+
+        return {
+            'nm': (nm_3d, nm_3d_std, nm_3d_mae), 'z0': (z0_3d, z0_3d_std, z0_3d_mae),
+            'alpha': (al_total_60, al_total_std, al_total_mae),
+            'vpi_base': (vpi_b, vpi_b_std, self.maes['VPI_L']),
+            'vpi_duty': (vpi_duty, vpi_b_std/(1-duty_cycle), self.maes['VPI_L']/(1-duty_cycle)),
+            'vpi_len': (vpi_length, (vpi_b_std/(1-duty_cycle))/L_cm, (self.maes['VPI_L']/(1-duty_cycle))/L_cm),
+            'vpi_ll': (vll_nom, vll_std, 0.0), 'vpi_full': (vfull_nom, vfull_std, 0.0), 
+            'bw': (bw_nom, bw_std, bw_mae), 'rt_min': max(rt_min_zs, rt_min_zc),
+            'f_axis': f_axis, 's21': s21_nom_curve,
+            'alpha_curve_nom': alpha_curve_nom, 'alpha_curve_bc': alpha_curve_bc, 'alpha_curve_wc': alpha_curve_wc
+        }
+
 @st.cache_resource
 def load_engine():
     return Ultimate_TFLN_Predictor()
@@ -63,7 +246,6 @@ def range_input(label, min_def, max_def, step=0.1, fmt="%.2f"):
     max_val = c2.number_input(f"Max {label}", value=float(max_def), step=step, format=fmt)
     return (min_val, max_val)
 
-# 11 DOFs mapped exactly to the predictor architecture
 b_WS    = range_input("WS [µm]", 10.0, 60.0)
 b_GAP   = range_input("GAP [µm]", 4.0, 12.0)
 b_MTX   = range_input("MTX [µm]", 1.5, 12.0)
@@ -88,14 +270,12 @@ class NSGA2_Problem(ElementwiseProblem):
         super().__init__(n_var=11, n_obj=2, n_ieq_constr=8, xl=xl, xu=xu)
 
     def _evaluate(self, x, out, *args, **kwargs):
-        # 11 Variables: [WS, GAP, MTX, L1, L2, W1, W2, CAP_W, ETCH_DEPTH, L_dev, Rt]
         WS, GAP, MTX, L1, L2, W1, W2, CAP_W, ETCH_DEPTH, L_dev, Rt = x
         geom_um = [WS, GAP, MTX, L1, L2, W1, W2, CAP_W, ETCH_DEPTH]
 
         g1_cap = CAP_W - (GAP - 1.0)
         g2_w = (W1 + W2) - 60.0
 
-        # Fast-Fail constraint boundaries
         if g1_cap > 0 or g2_w > 0:
             out["F"] = [10.0, 0.0]
             out["G"] = [g1_cap, g2_w, 10., 10., 10., 10., 10., 10.]
@@ -103,8 +283,6 @@ class NSGA2_Problem(ElementwiseProblem):
 
         try:
             res = engine.predict(geom=geom_um, L_device_mm=L_dev, Rt=Rt, Zs_driver=65.0, ng=2.27, plot=False)
-            
-            # STRICT FIX: Properly unpacking the [0] index from Bayesian Tuples
             bw  = res['bw'][0]
             vpi = res['vpi_len'][0]
             nm  = res['nm'][0]
@@ -113,7 +291,6 @@ class NSGA2_Problem(ElementwiseProblem):
         except Exception:
             bw, vpi, nm, zc, rtm = 0.0, 10.0, 0.0, 0.0, 100.0
 
-        # Dynamics Constraints calculated against User Settings
         g3_nm_low = (target_nm - target_tol) - nm
         g4_nm_high = nm - (target_nm + target_tol)
         g5_zc = target_zc - zc
@@ -131,14 +308,13 @@ def slsqp_polisher(x0, bnds):
         except:
             return {'z0':(0.,0.,0.), 'nm':(10.,0.,0.), 'bw':(0.,0.,0.), 'vpi_len':(10.,0.,0.), 'rt_min':100.}
 
-    # STRICT FIX: Explicit list indexing to prevent the "Naked x" crash
     def obj_Z0(x): return -get_p(x)['z0'][0]
     def eq_nm(x): return get_p(x)['nm'][0] - target_nm
     def ineq_bw(x): return get_p(x)['bw'][0] - target_bw
     def ineq_vpi(x): return target_vpi - get_p(x)['vpi_len'][0]
     def ineq_rt(x): return x[10] - get_p(x)['rt_min']
-    def ineq_cap(x): return (x[1] - 1.0) - x[7]  # GAP - 1.0 - CAP_W >= 0
-    def ineq_wsum(x): return 60.0 - (x[5] + x[6]) # 60 - W1 - W2 >= 0
+    def ineq_cap(x): return (x[1] - 1.0) - x[7] 
+    def ineq_wsum(x): return 60.0 - (x[5] + x[6])
 
     cons = [
         {'type': 'eq', 'fun': eq_nm},
@@ -178,7 +354,6 @@ if st.button("🚀 Run Ultimate Inverse Synthesizer", use_container_width=True):
             try:
                 res = engine.predict(geom=x[:9].tolist(), L_device_mm=x[9], Rt=x[10], Zs_driver=65.0, ng=2.27, plot=False)
                 
-                # STRICT FIX: Explicit index extraction for DataFrame build
                 pareto_data.append({
                     'VPI_Length_Scaled (V)': round(res['vpi_len'][0], 3),
                     'VPI_Fully_Penalized (V)': round(res['vpi_full'][0], 3),
@@ -204,11 +379,8 @@ if st.button("🚀 Run Ultimate Inverse Synthesizer", use_container_width=True):
         final_x = slsqp_polisher(best_nsga_x, BOUNDS_LIST)
 
         prog.progress(1.0, "Synthesis Complete!")
-
-        # Display Results
         st.success("✅ **Synthesis Complete! Found Ultimate Global Maximum.**")
 
-        # --- IMPEDANCE MATCHING STATUS ---
         final_res = engine.predict(geom=final_x[:9].tolist(), L_device_mm=final_x[9], Rt=final_x[10], Zs_driver=65.0, ng=2.27, plot=False)
         st.subheader("🔌 System Impedance Match")
         if final_x[10] < final_res['rt_min']:
@@ -219,7 +391,6 @@ if st.button("🚀 Run Ultimate Inverse Synthesizer", use_container_width=True):
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("🏆 Polished 11-DOF Geometry")
-            # STRICT FIX: Safe array formatting
             st.code(f"""
 [GEOMETRY]
 WS          = {final_x[0]:.2f} µm
@@ -238,7 +409,6 @@ Rt          = {final_x[10]:.2f} Ω
             """)
 
         with col2:
-            
             st.subheader("📈 NSGA-II Pareto Front")
             fig_p, ax_p = plt.subplots(figsize=(6,4))
             ax_p.scatter(VPI_pareto, BW_pareto, color='blue', edgecolor='k', alpha=0.7, label='NSGA-II Designs')
@@ -265,7 +435,6 @@ Rt          = {final_x[10]:.2f} Ω
         ])
         st.dataframe(fom_df, use_container_width=True, hide_index=True)
 
-        # Thread-safe Streamlit S21 plotting using the predictor's arrays
         st.subheader("📈 Broadband Electro-Optic S21 Response")
         fig_s21, ax_s21 = plt.subplots(figsize=(10, 4))
         ax_s21.plot(final_res['f_axis'], final_res['s21'], 'b-', lw=2)
@@ -283,7 +452,6 @@ Rt          = {final_x[10]:.2f} Ω
         st.subheader("🌐 Pareto Front Explorer")
         st.dataframe(df_pareto)
         
-        # Memory buffer for Excel download
         buf = io.BytesIO()
         df_pareto.to_excel(buf, index=False)
         st.download_button("📥 Download Pareto Front (Excel)", buf.getvalue(), "Pareto_Front_Designs.xlsx", "application/vnd.ms-excel")
