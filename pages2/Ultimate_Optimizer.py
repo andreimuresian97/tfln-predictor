@@ -48,7 +48,6 @@ class Ultimate_TFLN_Predictor:
             'Delta_L': 2.59073e-13, 'Delta_C': 6.83945e-17,
             'COMSOL_RF_ATT': 3.49594e-03, 'Net_Ohmic': 0.0563, 'Pure_Radiation': 0.1612
         }
-
         self.c0 = 299792458.0
         self.L_cell = 200e-6
         self._load_system()
@@ -183,10 +182,18 @@ class Ultimate_TFLN_Predictor:
 
         bw_nom, vll_nom, vfull_nom, s21_nom_curve = compute_foms(nm_3d, z0_3d, al_cond, al_r)
 
-        d_nm = 0.01 * nm_3d; bw_nm, vll_nm, vfull_nm, _ = compute_foms(nm_3d + d_nm, z0_3d, al_cond, al_r)
-        d_z0 = 0.01 * z0_3d; bw_z0, vll_z0, vfull_z0, _ = compute_foms(nm_3d, z0_3d + d_z0, al_cond, al_r)
-        d_ac = 0.01 * al_cond; bw_ac, vll_ac, vfull_ac, _ = compute_foms(nm_3d, z0_3d, al_cond + d_ac, al_r)
-        d_ar = max(0.01 * al_r, 1e-4); bw_ar, vll_ar, vfull_ar, _ = compute_foms(nm_3d, z0_3d, al_cond, al_r + d_ar)
+        # FIXED: Protected the Jacobian deltas against ZeroDivisionError
+        d_nm = max(0.01 * nm_3d, 1e-6)
+        bw_nm, vll_nm, vfull_nm, _ = compute_foms(nm_3d + d_nm, z0_3d, al_cond, al_r)
+        
+        d_z0 = max(0.01 * z0_3d, 1e-6)
+        bw_z0, vll_z0, vfull_z0, _ = compute_foms(nm_3d, z0_3d + d_z0, al_cond, al_r)
+        
+        d_ac = max(0.01 * abs(al_cond), 1e-6)
+        bw_ac, vll_ac, vfull_ac, _ = compute_foms(nm_3d, z0_3d, al_cond + d_ac, al_r)
+        
+        d_ar = max(0.01 * al_r, 1e-6)
+        bw_ar, vll_ar, vfull_ar, _ = compute_foms(nm_3d, z0_3d, al_cond, al_r + d_ar)
 
         def propagate(f_nom, f_n, f_z, f_c, f_r, uncert_n, uncert_z, uncert_c, uncert_r):
             return math.sqrt( (((f_n - f_nom)/d_nm)*uncert_n)**2 + (((f_z - f_nom)/d_z0)*uncert_z)**2 +
@@ -219,8 +226,7 @@ class Ultimate_TFLN_Predictor:
         }
 
 @st.cache_resource
-def load_engine():
-    return Ultimate_TFLN_Predictor()
+def load_engine(): return Ultimate_TFLN_Predictor()
 
 try:
     engine = load_engine()
@@ -246,16 +252,17 @@ def range_input(label, min_def, max_def, step=0.1, fmt="%.2f"):
     max_val = c2.number_input(f"Max {label}", value=float(max_def), step=step, format=fmt)
     return (min_val, max_val)
 
+# Restored original boundary limits
 b_WS    = range_input("WS [µm]", 10.0, 60.0)
-b_GAP   = range_input("GAP [µm]", 4.0, 12.0)
-b_MTX   = range_input("MTX [µm]", 1.5, 12.0)
-b_L1    = range_input("L1 [µm]", 4.0, 60.0)
+b_GAP   = range_input("GAP [µm]", 4.0, 15.0)
+b_MTX   = range_input("MTX [µm]", 1.5, 15.0)
+b_L1    = range_input("L1 [µm]", 2.0, 60.0)
 b_L2    = range_input("L2 [µm]", 4.0, 180.0)
-b_W1    = range_input("W1 [µm]", 4.0, 60.0)
-b_W2    = range_input("W2 [µm]", 4.0, 60.0)
-b_CAPW  = range_input("CAP_W [µm]", 1.5, 12.0)
+b_W1    = range_input("W1 [µm]", 2.0, 60.0)
+b_W2    = range_input("W2 [µm]", 2.0, 60.0)
+b_CAPW  = range_input("CAP_W [µm]", 1.5, 14.0)
 b_ETCH  = range_input("ETCH_DEPTH [µm]", 0.0, 0.40, step=0.01, fmt="%.3f")
-b_L     = range_input("L_device [mm]", 4.0, 16.5)
+b_L     = range_input("L_device [mm]", 4.0, 20.0)
 b_Rt    = range_input("Rt [Ω]", 34.0, 60.0)
 
 BOUNDS_LIST = [b_WS, b_GAP, b_MTX, b_L1, b_L2, b_W1, b_W2, b_CAPW, b_ETCH, b_L, b_Rt]
@@ -272,10 +279,10 @@ class NSGA2_Problem(ElementwiseProblem):
     def _evaluate(self, x, out, *args, **kwargs):
         WS, GAP, MTX, L1, L2, W1, W2, CAP_W, ETCH_DEPTH, L_dev, Rt = x
         geom_um = [WS, GAP, MTX, L1, L2, W1, W2, CAP_W, ETCH_DEPTH]
-
+        
         g1_cap = CAP_W - (GAP - 1.0)
         g2_w = (W1 + W2) - 60.0
-
+        
         if g1_cap > 0 or g2_w > 0:
             out["F"] = [10.0, 0.0]
             out["G"] = [g1_cap, g2_w, 10., 10., 10., 10., 10., 10.]
@@ -283,14 +290,13 @@ class NSGA2_Problem(ElementwiseProblem):
 
         try:
             res = engine.predict(geom=geom_um, L_device_mm=L_dev, Rt=Rt, Zs_driver=65.0, ng=2.27, plot=False)
-            bw  = res['bw'][0]
-            vpi = res['vpi_len'][0]
-            nm  = res['nm'][0]
-            zc  = res['z0'][0]
-            rtm = res['rt_min']
-        except Exception:
+            bw, vpi, nm, zc, rtm = res['bw'][0], res['vpi_len'][0], res['nm'][0], res['z0'][0], res['rt_min']
+        except Exception as e:
+            # Explicit printing to catch any remaining physics bugs
+            print(f"\n[!] ML Engine Error: {e}")
             bw, vpi, nm, zc, rtm = 0.0, 10.0, 0.0, 0.0, 100.0
 
+        # Mapped directly to target constraints
         g3_nm_low = (target_nm - target_tol) - nm
         g4_nm_high = nm - (target_nm + target_tol)
         g5_zc = target_zc - zc
@@ -301,157 +307,141 @@ class NSGA2_Problem(ElementwiseProblem):
         out["F"] = [vpi, -bw]
         out["G"] = [g1_cap, g2_w, g3_nm_low, g4_nm_high, g5_zc, g6_rt, g7_bw, g8_vpi]
 
-def slsqp_polisher(x0, bnds):
+def slsqp_polisher(x0, bounds_list):
     def get_p(x):
-        try:
-            return engine.predict(geom=x[:9].tolist(), L_device_mm=x[9], Rt=x[10], Zs_driver=65.0, ng=2.27, plot=False)
-        except:
-            return {'z0':(0.,0.,0.), 'nm':(10.,0.,0.), 'bw':(0.,0.,0.), 'vpi_len':(10.,0.,0.), 'rt_min':100.}
-
-    def obj_Z0(x): return -get_p(x)['z0'][0]
+        try: return engine.predict(geom=x[:9].tolist(), L_device_mm=x[9], Rt=x[10], Zs_driver=65.0, ng=2.27, plot=False)
+        except: return {'z0':(0.,0.,0.), 'nm':(10.,0.,0.), 'bw':(0.,0.,0.), 'vpi_len':(10.,0.,0.), 'rt_min':100.}
+    
+    def obj(x): return -get_p(x)['z0'][0] 
     def eq_nm(x): return get_p(x)['nm'][0] - target_nm
-    def ineq_bw(x): return get_p(x)['bw'][0] - target_bw
-    def ineq_vpi(x): return target_vpi - get_p(x)['vpi_len'][0]
-    def ineq_rt(x): return x[10] - get_p(x)['rt_min']
-    def ineq_cap(x): return (x[1] - 1.0) - x[7] 
-    def ineq_wsum(x): return 60.0 - (x[5] + x[6])
-
+    
     cons = [
         {'type': 'eq', 'fun': eq_nm},
-        {'type': 'ineq', 'fun': ineq_bw},
-        {'type': 'ineq', 'fun': ineq_vpi},
-        {'type': 'ineq', 'fun': ineq_rt},
-        {'type': 'ineq', 'fun': ineq_cap},
-        {'type': 'ineq', 'fun': ineq_wsum}
+        {'type': 'ineq', 'fun': lambda x: get_p(x)['bw'][0] - target_bw},
+        {'type': 'ineq', 'fun': lambda x: target_vpi - get_p(x)['vpi_len'][0]},
+        {'type': 'ineq', 'fun': lambda x: x[10] - get_p(x)['rt_min']},
+        {'type': 'ineq', 'fun': lambda x: (x[1]-1.0) - x[7]},
+        {'type': 'ineq', 'fun': lambda x: 60.0 - (x[5]+x[6])}
     ]
-
-    res = scipy_minimize(obj_Z0, x0=x0, method='SLSQP', bounds=bnds, constraints=cons, options={'ftol': 1e-4, 'maxiter': 50})
-    return res.x
+    return scipy_minimize(obj, x0, method='SLSQP', bounds=bounds_list, constraints=cons, options={'ftol': 1e-4, 'maxiter': 50}).x
 
 # ==========================================
-# 5. EXECUTION PIPELINE
+# 5. VISUALIZATION
 # ==========================================
-if st.button("🚀 Run Ultimate Inverse Synthesizer", use_container_width=True):
-    prog = st.progress(0.0, "Stage 1/3: Launching NSGA-II Pareto Search...")
+def render_svg(s):
+    return f'<img src="data:image/svg+xml;base64,{base64.b64encode(s.encode("utf-8")).decode("utf-8")}" width="100%"/>'
 
-    problem = NSGA2_Problem(BOUNDS_LIST)
-    algorithm = NSGA2(pop_size=150, n_offsprings=50, eliminate_duplicates=True)
+def generate_exact_svg(p):
+    W1, W2, L1, L2, WS, GAP, MTX, CAP_W, ETCH_DEPTH = p["W1"], p["W2"], p["L1"], p["L2"], p["WS"], p["GAP"], p["MTX"], p["CAP_W"], p["ETCH_DEPTH"]
+    WG = 70.0; BOTTOM_LAYER_H = 0.46 - ETCH_DEPTH; RIDGE_H = ETCH_DEPTH; CAP_HEIGHT = 1.4
+    C_ELEC = '#F5BD02'; C_SUB = '#00BFFF'; C_CAP = '#00BFFF'; C_LINE = 'black'; CX = 400
 
-    res_ga = pymoo_minimize(problem, algorithm, get_termination("n_gen", 100), seed=42, verbose=False)
+    def arrow(x1, y1, x2, y2, txt, loc="top", off=10):
+        m, t, a, d = (x1+x2)/2, (y1+y2)/2, "middle", "middle"
+        if loc=="top": t-=off; d="auto"
+        elif loc=="bottom": t+=off; d="hanging"
+        elif loc=="left": m-=off; a="end"
+        elif loc=="right": m+=off; a="start"
+        return f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{C_LINE}" stroke-width="1.5" marker-start="url(#S)" marker-end="url(#E)" /><text x="{m}" y="{t}" fill="{C_LINE}" font-family="sans-serif" font-size="14" font-weight="bold" text-anchor="{a}" dominant-baseline="{d}">{txt}</text>'
 
+    def top(x,y): return CX+x*3.5, 380-y*3.5
+    pts = [(GAP/2,-100), (GAP/2+WG,-100), (GAP/2+WG,100), (GAP/2,100), (GAP/2,L1/2), (GAP/2+W1,L1/2), (GAP/2+W1,L2/2), (GAP/2+W1+W2,L2/2), (GAP/2+W1+W2,-L2/2), (GAP/2+W1,-L2/2), (GAP/2+W1,-L1/2), (GAP/2,-L1/2)]
+    poly = " ".join([f"{top(x,y)[0]},{top(x,y)[1]}" for x,y in pts])
+    svg_t = f'<svg width="800" height="700" viewBox="0 0 800 700" xmlns="http://www.w3.org/2000/svg"><defs><marker id="E" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z"/></marker><marker id="S" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto"><path d="M9,0 L9,6 L0,3 z"/></marker></defs><text x="20" y="50" font-family="sans-serif" font-size="24" font-weight="bold">Top-Down View</text><rect x="{top(-(GAP/2+WS),100)[0]}" y="{top(-(GAP/2+WS),100)[1]}" width="{WS*3.5}" height="{200*3.5}" fill="{C_ELEC}" stroke="{C_LINE}" stroke-width="1.5"/><polygon points="{poly}" fill="{C_ELEC}" stroke="{C_LINE}" stroke-width="1.5"/>{arrow(*top(-(GAP/2+WS),120),*top(-GAP/2,120),"WS","top")}{arrow(*top(GAP/2,120),*top(GAP/2+WG,120),"WG","top")}{arrow(*top(-GAP/2,-120),*top(GAP/2,-120),"GAP","bottom")}{arrow(*top(GAP/2-20,-L1/2),*top(GAP/2-20,L1/2),"L1","left")}{arrow(*top(GAP/2+W1+W2+20,-L2/2),*top(GAP/2+W1+W2+20,L2/2),"L2","right")}{arrow(*top(GAP/2,-L1/2-20),*top(GAP/2+W1,-L1/2-20),"W1","bottom")}{arrow(*top(GAP/2+W1,L2/2+20),*top(GAP/2+W1+W2,L2/2+20),"W2","top")}</svg>'
+
+    SC = 700/((WS/2+GAP)+1.0)/2
+    def cs(x,y): return CX+x*SC, 350-y*SC
+    svg_c = f'<svg width="800" height="600" viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg"><defs><marker id="E" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z"/></marker><marker id="S" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto"><path d="M9,0 L9,6 L0,3 z"/></marker></defs><text x="20" y="50" font-family="sans-serif" font-size="24" font-weight="bold">Cross-Section</text><rect x="0" y="{cs(0,0)[1]}" width="800" height="600" fill="{C_SUB}"/><rect x="0" y="{cs(0,BOTTOM_LAYER_H)[1]}" width="800" height="{BOTTOM_LAYER_H*SC}" fill="black"/><rect x="{cs(-WS/2,BOTTOM_LAYER_H+MTX)[0]}" y="{cs(-WS/2,BOTTOM_LAYER_H+MTX)[1]}" width="{WS*SC}" height="{MTX*SC}" fill="{C_ELEC}" stroke="{C_LINE}" stroke-width="1.5"/><rect x="{cs(WS/2+GAP,BOTTOM_LAYER_H+MTX)[0]}" y="{cs(WS/2+GAP,BOTTOM_LAYER_H+MTX)[1]}" width="{500*SC}" height="{MTX*SC}" fill="{C_ELEC}" stroke="{C_LINE}" stroke-width="1.5"/><rect x="{cs(-(WS/2+GAP+500),BOTTOM_LAYER_H+MTX)[0]}" y="{cs(-(WS/2+GAP+500),BOTTOM_LAYER_H+MTX)[1]}" width="{500*SC}" height="{MTX*SC}" fill="{C_ELEC}" stroke="{C_LINE}" stroke-width="1.5"/>'
+    for cx in [WS/2+GAP/2, -WS/2-GAP/2]: svg_c += f'<rect x="{cs(cx-CAP_W/2,BOTTOM_LAYER_H+CAP_HEIGHT)[0]}" y="{cs(cx-CAP_W/2,BOTTOM_LAYER_H+CAP_HEIGHT)[1]}" width="{CAP_W*SC}" height="{CAP_HEIGHT*SC}" fill="{C_CAP}" stroke="{C_LINE}" stroke-width="1.5"/><rect x="{cs(cx-0.4,0.46)[0]}" y="{cs(cx-0.4,0.46)[1]}" width="{0.8*SC}" height="{RIDGE_H*SC}" fill="black"/>'
+    y = BOTTOM_LAYER_H+max(MTX,CAP_HEIGHT)+(3.0 if MTX<5 else 0.5*MTX)
+    svg_c += f'{arrow(*cs(-WS/2,y),*cs(WS/2,y),"WS","top",15)}{arrow(*cs(WS/2,y),*cs(WS/2+GAP,y),"GAP","top",15)}{arrow(*cs((-WS/2-GAP/2)-CAP_W/2,BOTTOM_LAYER_H+CAP_HEIGHT+1.0),*cs((-WS/2-GAP/2)+CAP_W/2,BOTTOM_LAYER_H+CAP_HEIGHT+1.0),"CAP_W","top",15)}{arrow(*cs(-WS/2+2.0,BOTTOM_LAYER_H),*cs(-WS/2+2.0,BOTTOM_LAYER_H+MTX),"MTX","right")}</svg>'
+    return svg_t, svg_c
+
+# ==========================================
+# 6. MAIN EXECUTION
+# ==========================================
+if st.button("🚀 RUN OPTIMIZATION", type="primary"):
+    with st.spinner("Step 1/2: Global Pareto Search (NSGA-II)..."):
+        res_ga = pymoo_minimize(NSGA2_Problem(BOUNDS_LIST), NSGA2(pop_size=50, n_offsprings=25), get_termination("n_gen", 40), seed=42)
+        
     if res_ga.F is None:
-        prog.empty()
-        st.error("❌ Optimizer failed to find any designs meeting all constraints. Try relaxing BW, Vpi, or Zc targets.")
+        st.error("No designs met all physics constraints. Relax your bounds or targets.")
     else:
-        prog.progress(0.5, "Stage 2/3: Extracting Pareto Front and Preparing DataFrames...")
-
-        VPI_pareto = res_ga.F[:, 0]
-        BW_pareto = -res_ga.F[:, 1]
-        X_pareto = res_ga.X
-
-        pareto_data = []
-        for x in X_pareto:
-            try:
-                res = engine.predict(geom=x[:9].tolist(), L_device_mm=x[9], Rt=x[10], Zs_driver=65.0, ng=2.27, plot=False)
-                
-                pareto_data.append({
-                    'VPI_Length_Scaled (V)': round(res['vpi_len'][0], 3),
-                    'VPI_Fully_Penalized (V)': round(res['vpi_full'][0], 3),
-                    'EO_Bandwidth (GHz)': round(res['bw'][0], 1),
-                    'Zc (Ohms)': round(res['z0'][0], 2),
-                    'nm': round(res['nm'][0], 4),
-                    'Total_RF_Alpha_60GHz': round(res['alpha'][0], 3),
-                    'Rt (Ohms)': round(x[10], 2),
-                    'L_dev (mm)': round(x[9], 2),
-                    'WS': round(x[0], 2), 'GAP': round(x[1], 2), 'MTX': round(x[2], 2),
-                    'L1': round(x[3], 2), 'L2': round(x[4], 2), 'W1': round(x[5], 2), 'W2': round(x[6], 2),
-                    'CAP_W': round(x[7], 2), 'ETCH_DEPTH': round(x[8], 3)
-                })
-            except Exception:
-                pass
-
-        df_pareto = pd.DataFrame(pareto_data).sort_values(by='EO_Bandwidth (GHz)', ascending=False)
-
-        prog.progress(0.8, "Stage 3/3: Running SLSQP Gradient Polish on Absolute Best Design...")
-        best_idx = np.argmax(BW_pareto)
-        best_nsga_x = X_pareto[best_idx]
-
-        final_x = slsqp_polisher(best_nsga_x, BOUNDS_LIST)
-
-        prog.progress(1.0, "Synthesis Complete!")
-        st.success("✅ **Synthesis Complete! Found Ultimate Global Maximum.**")
-
-        final_res = engine.predict(geom=final_x[:9].tolist(), L_device_mm=final_x[9], Rt=final_x[10], Zs_driver=65.0, ng=2.27, plot=False)
-        st.subheader("🔌 System Impedance Match")
-        if final_x[10] < final_res['rt_min']:
-            st.error(f"⚠️ **WARNING:** Your Termination Resistor (Rt = {final_x[10]:.2f} Ω) violates physical matching limits (Min Allowed: {final_res['rt_min']:.2f} Ω). Expect severe RF reflections and signal distortion.")
-        else:
-            st.success(f"✅ **Status:** Impedance matching (Rt = {final_x[10]:.2f} Ω) is safely within limits (> {final_res['rt_min']:.2f} Ω).")
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("🏆 Polished 11-DOF Geometry")
-            st.code(f"""
-[GEOMETRY]
-WS          = {final_x[0]:.2f} µm
-GAP         = {final_x[1]:.2f} µm
-MTX         = {final_x[2]:.2f} µm
-L1          = {final_x[3]:.2f} µm
-L2          = {final_x[4]:.2f} µm
-W1          = {final_x[5]:.2f} µm
-W2          = {final_x[6]:.2f} µm
-CAP_W       = {final_x[7]:.2f} µm
-ETCH_DEPTH  = {final_x[8]:.3f} µm
-
-[SYSTEM]
-L_device    = {final_x[9]:.2f} mm
-Rt          = {final_x[10]:.2f} Ω
-            """)
-
-        with col2:
-            st.subheader("📈 NSGA-II Pareto Front")
-            fig_p, ax_p = plt.subplots(figsize=(6,4))
-            ax_p.scatter(VPI_pareto, BW_pareto, color='blue', edgecolor='k', alpha=0.7, label='NSGA-II Designs')
-            ax_p.scatter(final_res['vpi_len'][0], final_res['bw'][0], color='gold', marker='*', s=250, edgecolor='k', label='SLSQP Final Winner')
-            ax_p.set_xlabel("VPI Length Scaled (V)")
-            ax_p.set_ylabel("Bandwidth (GHz)")
-            ax_p.grid(True, ls=':', alpha=0.7)
-            ax_p.legend()
-            st.pyplot(fig_p)
-
-        st.subheader("📊 Final Modulator Figures of Merit")
-        def render_fom(name, tup, unit):
-            val, std, mae = tup
-            return {"Metric": name, "Prediction": f"{val:.3f} {unit}", "95% CI": f"[{max(0.0, val-1.96*std):.3f}, {val+1.96*std:.3f}] {unit}", "Global MAE": f"± {mae:.4f}" if mae > 0 else "N/A"}
-
-        fom_df = pd.DataFrame([
-            render_fom("Microwave Index (nm)", final_res['nm'], ""),
-            render_fom("Characteristic Impedance (Z0)", final_res['z0'], "Ω"),
-            render_fom("Total RF Attenuation @ 60 GHz", final_res['alpha'], "dB/cm"),
-            render_fom("Duty Cycle Corrected VPI*L", final_res['vpi_duty'], "V*cm"),
-            render_fom("Length Scaled VPI", final_res['vpi_len'], "V"),
-            render_fom("VPI (Fully Penalized)", final_res['vpi_full'], "V"),
-            render_fom("Electro-Optic Bandwidth", final_res['bw'], "GHz")
-        ])
-        st.dataframe(fom_df, use_container_width=True, hide_index=True)
-
-        st.subheader("📈 Broadband Electro-Optic S21 Response")
-        fig_s21, ax_s21 = plt.subplots(figsize=(10, 4))
-        ax_s21.plot(final_res['f_axis'], final_res['s21'], 'b-', lw=2)
-        ax_s21.axhline(-3, color='r', ls='--')
-        if final_res['bw'][0] < 150.0:
-            ax_s21.plot(final_res['bw'][0], -3, 'ko', markersize=8)
-            ax_s21.annotate(f"{final_res['bw'][0]:.1f} GHz", (final_res['bw'][0] + 3, -1.5), fontsize=12, fontweight='bold')
-        ax_s21.set_xlabel('Frequency (GHz)')
-        ax_s21.set_ylabel('Normalized S21 (dB)')
-        ax_s21.set_xlim(0, 150)
-        ax_s21.set_ylim(-8, 1)
-        ax_s21.grid(True, linestyle=':', alpha=0.7)
-        st.pyplot(fig_s21)
-
-        st.subheader("🌐 Pareto Front Explorer")
-        st.dataframe(df_pareto)
+        # Extract Pareto Front
+        df_p = pd.DataFrame(res_ga.X, columns=['WS','GAP','MTX','L1','L2','W1','W2','CAP_W','ETCH_DEPTH','L_dev','Rt'])
+        df_p['VPI (V)'] = res_ga.F[:,0]; df_p['BW (GHz)'] = -res_ga.F[:,1]
+        df_p = df_p.sort_values(by='BW (GHz)', ascending=False)
         
         buf = io.BytesIO()
-        df_pareto.to_excel(buf, index=False)
-        st.download_button("📥 Download Pareto Front (Excel)", buf.getvalue(), "Pareto_Front_Designs.xlsx", "application/vnd.ms-excel")
+        df_p.to_excel(buf, index=False)
+        st.download_button("📥 Download Pareto Front (Excel)", buf.getvalue(), "Pareto_Front.xlsx", "application/vnd.ms-excel")
+
+        st.markdown("---")
+        with st.spinner("Step 2/2: Gradient Polishing for Maximum Z0..."):
+            best_idx = np.argmax(-res_ga.F[:,1])
+            final_x = slsqp_polisher(res_ga.X[best_idx], BOUNDS_LIST)
+            res = engine.predict(geom=final_x[:9].tolist(), L_device_mm=final_x[9], Rt=final_x[10], Zs_driver=65.0, ng=2.27, plot=False)
+            
+        st.header("🏆 Optimal Geometry Found")
+        
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Z0 (Impedance)", f"{res['z0'][0]:.2f} Ω", delta="Maximized")
+        c2.metric("EO Bandwidth", f"{res['bw'][0]:.1f} GHz")
+        c3.metric("VPI", f"{res['vpi_len'][0]:.2f} V")
+        c4.metric("Index (nm)", f"{res['nm'][0]:.4f}", help="Locked to Target")
+        
+        st.subheader("Optimal Parameters")
+        p_dict = dict(zip(['WS','GAP','MTX','L1','L2','W1','W2','CAP_W','ETCH_DEPTH','L_dev','Rt'], final_x))
+        st.table(pd.DataFrame([p_dict]).style.format("{:.3f}"))
+        
+        col1, col2 = st.columns(2)
+        svg_t, svg_c = generate_exact_svg(p_dict)
+        with col1: st.markdown(render_svg(svg_t), unsafe_allow_html=True)
+        with col2: st.markdown(render_svg(svg_c), unsafe_allow_html=True)
+        
+        st.markdown("---")
+        st.subheader("📊 Detailed Figures of Merit")
+        
+        m_nm, m_zc, m_vpi, m_a = res['nm'][2], res['z0'][2], res['vpi_len'][2], res['alpha'][2]
+        
+        def fmt(tup): return f"{tup[0]:.3f}", f"[{max(0, tup[0]-1.96*tup[1]):.3f}, {tup[0]+1.96*tup[1]:.3f}]"
+
+        nm_v, nm_c = fmt(res['nm'])
+        zc_v, zc_c = fmt(res['z0'])
+        vp_v, vp_c = fmt(res['vpi_len'])
+        al_v, al_c = fmt(res['alpha'])
+        bw_v, bw_c = fmt(res['bw'])
+        vll_v, vll_c = fmt(res['vpi_ll'])
+        vf_v, vf_c = fmt(res['vpi_full'])
+
+        data = [
+            ["Microwave Index (nm)", nm_v, nm_c, f"± {m_nm:.4f}"],
+            ["Impedance Zc [Ω]", zc_v, zc_c, f"± {m_zc:.2f}"],
+            ["VPI (Electrostatic) [V]", vp_v, vp_c, f"± {m_vpi:.3f}"],
+            ["RF Attenuation @ 60 GHz [dB/cm]", al_v, al_c, f"± {m_a:.3f}"],
+            ["EO Bandwidth [GHz]", bw_v, bw_c, f"± {res['bw'][2]:.1f}"],
+            ["VPI @ 60GHz (Walk-off+Mismatch) [V]", vll_v, vll_c, "N/A (Derived)"],
+            ["VPI @ 60GHz (Full RF Physics) [V]", vf_v, vf_c, "N/A (Derived)"]
+        ]
+        st.table(pd.DataFrame(data, columns=["FOM", "Predicted", "95% CI", "Global MAE"]))
+        
+        st.markdown("### 📈 Broadband RF Response & Attenuation")
+        f1, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+        
+        ax1.plot(res['f_axis'], res['s21'], 'b-', lw=2)
+        ax1.axhline(-3, color='r', ls='--')
+        if res['bw'][0] < 150: ax1.plot(res['bw'][0], -3, 'ko'); ax1.annotate(f"{res['bw'][0]:.1f} GHz", (res['bw'][0]+3, -1.5))
+        ax1.set(xlabel='Frequency (GHz)', ylabel='S21 (dB)', title='EO Bandwidth', xlim=(0,150), ylim=(-8,1)); ax1.grid(ls=':')
+        
+        ax2.plot(res['f_axis'], res['alpha_curve_nom'], 'g-', lw=2, label='Nominal')
+        ax2.fill_between(res['f_axis'], res['alpha_curve_bc'], res['alpha_curve_wc'], color='green', alpha=0.2, label='95% CI')
+        ax2.set(xlabel='Frequency (GHz)', ylabel='Alpha (dB/cm)', title='Decoupled RF Attenuation', xlim=(0,150)); ax2.grid(ls=':')
+        
+        st.pyplot(f1)
+        
+        # Pareto Plot
+        f2, ax3 = plt.subplots(figsize=(8,4))
+        ax3.scatter(res_ga.F[:,0], -res_ga.F[:,1], c='blue', alpha=0.7)
+        ax3.scatter(res['vpi_len'][0], res['bw'][0], c='gold', s=200, edgecolors='k', marker='*', label='SLSQP Final Winner')
+        ax3.set(xlabel='VPI [V]', ylabel='Bandwidth [GHz]', title='NSGA-II Pareto Front')
+        ax3.grid(ls=':'); ax3.legend(); st.pyplot(f2)
