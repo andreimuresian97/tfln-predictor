@@ -48,6 +48,7 @@ class Ultimate_TFLN_Predictor:
             'Delta_L': 2.59073e-13, 'Delta_C': 6.83945e-17,
             'COMSOL_RF_ATT': 3.49594e-03, 'Net_Ohmic': 0.0563, 'Pure_Radiation': 0.1612
         }
+
         self.c0 = 299792458.0
         self.L_cell = 200e-6
         self._load_system()
@@ -232,7 +233,7 @@ def load_engine(): return Ultimate_TFLN_Predictor()
 try:
     engine = load_engine()
 except Exception as e:
-    st.error(f"Failed to load predictor models. Error: {e}")
+    st.error(f"Failed to load predictor models. Ensure 'gp_surrogate_results_ultimate_500LHS' exists. Error: {e}")
     st.stop()
 
 # ==========================================
@@ -241,6 +242,7 @@ except Exception as e:
 st.sidebar.header("1. Performance Targets")
 target_vpi = st.sidebar.number_input("Max Target VPI (Length Scaled) [V]", value=2.00, step=0.1)
 target_bw = st.sidebar.number_input("Min Target EO Bandwidth [GHz]", value=65.0, step=5.0)
+# REMOVED target_zc as requested to allow unconstrained Zc maximization
 target_nm = st.sidebar.number_input("Target Index (nm)", value=2.270, step=0.01)
 target_tol = st.sidebar.number_input("Index Tolerance (+/-)", value=0.03, step=0.005)
 
@@ -275,7 +277,7 @@ class NSGA2_Problem(ElementwiseProblem):
         xu = np.array([b[1] for b in bnds])
         # FATAL BUG FIX: Prevent Pymoo crash when min == max (e.g. fixed ETCH_DEPTH)
         xu = np.maximum(xl + 1e-5, xu)
-        # Reduced constraints from 8 to 7 by removing g5_zc
+        # Reduced constraints from 8 to 7 by removing Zc constraint
         super().__init__(n_var=11, n_obj=2, n_ieq_constr=7, xl=xl, xu=xu)
 
     def _evaluate(self, x, out, *args, **kwargs):
@@ -299,7 +301,6 @@ class NSGA2_Problem(ElementwiseProblem):
 
         g3_nm_low = (target_nm - target_tol) - nm
         g4_nm_high = nm - (target_nm + target_tol)
-        # Zc constraint removed to let GA find true Pareto limit
         g5_rt = rtm - Rt
         g6_bw = target_bw - bw
         g7_vpi = vpi - target_vpi
@@ -379,7 +380,7 @@ if st.button("🚀 RUN OPTIMIZATION", type="primary"):
         st.markdown("---")
         with st.spinner("Step 2/2: Gradient Polishing for Maximum Z0..."):
             
-            # THE FATAL FIX: Find the highest Zc on the Pareto front that meets user targets
+            # THE FATAL FIX: Route SLSQP to the absolute highest Z0 on the Pareto front that meets user targets
             best_zc = -1
             best_nsga_x = res_ga.X[0]
             
@@ -445,13 +446,20 @@ if st.button("🚀 RUN OPTIMIZATION", type="primary"):
         st.table(pd.DataFrame(data, columns=["FOM", "Predicted", "95% CI", "Global MAE"]))
         
         st.markdown("### 📈 Broadband RF Response & Attenuation")
-        fig_s21, ax_s21 = plt.subplots(figsize=(10, 4))
-        ax_s21.plot(res['f_axis'], res['s21'], 'b-', lw=2)
-        ax_s21.axhline(-3, color='r', ls='--')
-        if res['bw'][0] < 150: ax_s21.plot(res['bw'][0], -3, 'ko'); ax_s21.annotate(f"{res['bw'][0]:.1f} GHz", (res['bw'][0]+3, -1.5))
-        ax_s21.set(xlabel='Frequency (GHz)', ylabel='S21 (dB)', title='EO Bandwidth', xlim=(0,150), ylim=(-8,1)); ax_s21.grid(ls=':')
-        st.pyplot(fig_s21)
+        f1, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
         
+        ax1.plot(res['f_axis'], res['s21'], 'b-', lw=2)
+        ax1.axhline(-3, color='r', ls='--')
+        if res['bw'][0] < 150: ax1.plot(res['bw'][0], -3, 'ko'); ax1.annotate(f"{res['bw'][0]:.1f} GHz", (res['bw'][0]+3, -1.5))
+        ax1.set(xlabel='Frequency (GHz)', ylabel='S21 (dB)', title='EO Bandwidth', xlim=(0,150), ylim=(-8,1)); ax1.grid(ls=':')
+        
+        ax2.plot(res['f_axis'], res['alpha_curve_nom'], 'g-', lw=2, label='Nominal')
+        ax2.fill_between(res['f_axis'], res['alpha_curve_bc'], res['alpha_curve_wc'], color='green', alpha=0.2, label='95% CI')
+        ax2.set(xlabel='Frequency (GHz)', ylabel='Alpha (dB/cm)', title='Decoupled RF Attenuation', xlim=(0,150)); ax2.grid(ls=':')
+        
+        st.pyplot(f1)
+        
+        # Pareto Plot
         f2, ax3 = plt.subplots(figsize=(8,4))
         ax3.scatter(res_ga.F[:,0], -res_ga.F[:,1], c='blue', alpha=0.7)
         ax3.scatter(res['vpi_len'][0], res['bw'][0], c='gold', s=200, edgecolors='k', marker='*', label='SLSQP Final Winner')
