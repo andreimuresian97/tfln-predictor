@@ -48,7 +48,6 @@ class Ultimate_TFLN_Predictor:
             'Delta_L': 2.59073e-13, 'Delta_C': 6.83945e-17,
             'COMSOL_RF_ATT': 3.49594e-03, 'Net_Ohmic': 0.0563, 'Pure_Radiation': 0.1612
         }
-
         self.c0 = 299792458.0
         self.L_cell = 200e-6
         self._load_system()
@@ -105,7 +104,6 @@ class Ultimate_TFLN_Predictor:
         Gamma_S = (Zs - zc) / (Zs + zc)
         
         denom = 1 - Gamma_S * Gamma_L * np.exp(-2 * gamma_m * L_m)
-        # Bulletproof: Prevent divide-by-zero if denom collapses perfectly
         denom = np.where(np.abs(denom) < 1e-12, 1e-12, denom)
         
         delta1 = gamma_o - gamma_m
@@ -118,7 +116,6 @@ class Ultimate_TFLN_Predictor:
         S21_mag = np.abs(S21_eo)
         idx_1GHz = np.argmin(np.abs(f_GHz - 1.0))
         
-        # Bulletproof: Prevent divide-by-zero on normalized S21
         norm_val = max(1e-12, S21_mag[idx_1GHz])
         return 20 * np.log10(S21_mag / norm_val), S21_mag
 
@@ -128,7 +125,6 @@ class Ultimate_TFLN_Predictor:
                 if i > 0:
                     f1, f2 = f_GHz[i-1], f_GHz[i]
                     s1, s2 = s21_db[i-1], s21_db[i]
-                    # Bulletproof: Prevent divide-by-zero if response is perfectly flat
                     denom = s2 - s1
                     if denom == 0: denom = 1e-12
                     return f1 + (f2 - f1) * (-3.0 - s1) / denom
@@ -151,10 +147,7 @@ class Ultimate_TFLN_Predictor:
         
         nm_2d, nm_2d_std = self._predict_lin('RN_NM', self.scalers['NMZ0_C']['X'], self.scalers['NMZ0_C']['y']['RN NM'], x_c_5)
         z0_2d, z0_2d_std = self._predict_lin('Z0', self.scalers['NMZ0_C']['X'], self.scalers['NMZ0_C']['y']['Z0 [Ω]'], x_c_5)
-        
-        # Bulletproof: Prevent 2D predictions from collapsing to 0 and ruining 3D kinematics
-        nm_2d = max(1.0, nm_2d)
-        z0_2d = max(1.0, z0_2d)
+        nm_2d = max(1.0, nm_2d); z0_2d = max(1.0, z0_2d)
         
         dL, dL_std = self._predict_lin('dL', self.scalers['NMZ0_CST']['X'], self.scalers['NMZ0_CST']['y']['Delta_L_lumped'], x_lc_9)
         dC, dC_std = self._predict_lin('dC', self.scalers['NMZ0_CST']['X'], self.scalers['NMZ0_CST']['y']['Delta_C_lumped'], x_lc_9)
@@ -189,7 +182,6 @@ class Ultimate_TFLN_Predictor:
             s21_dB_full, s21_mag_full = self.calc_eo_response(f_axis, a_c_val, a_r_val, n_val, z_val, L_cm, ng, Rt, Zs_driver)
             bw = self.get_bandwidth(f_axis, s21_dB_full)
             
-            # Bulletproof: Prevent divide-by-zero during VPI extraction
             mag_ratio_ll = max(1e-12, s21_mag_ll[idx_60] / max(1e-12, s21_mag_ll[0]))
             vpi_ll = vpi_length / mag_ratio_ll
             
@@ -200,7 +192,6 @@ class Ultimate_TFLN_Predictor:
 
         bw_nom, vll_nom, vfull_nom, s21_nom_curve = compute_foms(nm_3d, z0_3d, al_cond, al_r)
 
-        # THE FATAL FIX: Force delta values to never be zero to save the Jacobian
         d_nm = max(0.01 * abs(nm_3d), 1e-6)
         d_z0 = max(0.01 * abs(z0_3d), 1e-6)
         d_ac = max(0.01 * abs(al_cond), 1e-6)
@@ -216,6 +207,7 @@ class Ultimate_TFLN_Predictor:
                               (((f_c - f_nom)/d_ac)*uncert_c)**2 + (((f_r - f_nom)/d_ar)*uncert_r)**2 )
 
         bw_std = propagate(bw_nom, bw_nm, bw_z0, bw_ac, bw_ar, nm_3d_std, z0_3d_std, al_cond_std, al_r_std)
+        bw_mae = propagate(bw_nom, bw_nm, bw_z0, bw_ac, bw_ar, nm_3d_mae, z0_3d_mae, self.maes['COMSOL_RF_ATT'], self.maes['Pure_Radiation'])
         vll_std = propagate(vll_nom, vll_nm, vll_z0, vll_nom, vll_nom, nm_3d_std, z0_3d_std, 0, 0)
         vfull_std = propagate(vfull_nom, vfull_nm, vfull_z0, vfull_ac, vfull_ar, nm_3d_std, z0_3d_std, al_cond_std, al_r_std)
 
@@ -240,7 +232,7 @@ def load_engine(): return Ultimate_TFLN_Predictor()
 try:
     engine = load_engine()
 except Exception as e:
-    st.error(f"Failed to load predictor models. Ensure 'gp_surrogate_results_ultimate_500LHS' exists. Error: {e}")
+    st.error(f"Failed to load predictor models. Error: {e}")
     st.stop()
 
 # ==========================================
@@ -249,7 +241,6 @@ except Exception as e:
 st.sidebar.header("1. Performance Targets")
 target_vpi = st.sidebar.number_input("Max Target VPI (Length Scaled) [V]", value=2.00, step=0.1)
 target_bw = st.sidebar.number_input("Min Target EO Bandwidth [GHz]", value=65.0, step=5.0)
-target_zc = st.sidebar.number_input("Min Target Zc [Ω]", value=45.0, step=1.0)
 target_nm = st.sidebar.number_input("Target Index (nm)", value=2.270, step=0.01)
 target_tol = st.sidebar.number_input("Index Tolerance (+/-)", value=0.03, step=0.005)
 
@@ -282,7 +273,10 @@ class NSGA2_Problem(ElementwiseProblem):
     def __init__(self, bnds):
         xl = np.array([b[0] for b in bnds])
         xu = np.array([b[1] for b in bnds])
-        super().__init__(n_var=11, n_obj=2, n_ieq_constr=8, xl=xl, xu=xu)
+        # FATAL BUG FIX: Prevent Pymoo crash when min == max (e.g. fixed ETCH_DEPTH)
+        xu = np.maximum(xl + 1e-5, xu)
+        # Reduced constraints from 8 to 7 by removing g5_zc
+        super().__init__(n_var=11, n_obj=2, n_ieq_constr=7, xl=xl, xu=xu)
 
     def _evaluate(self, x, out, *args, **kwargs):
         WS, GAP, MTX, L1, L2, W1, W2, CAP_W, ETCH_DEPTH, L_dev, Rt = x
@@ -293,30 +287,25 @@ class NSGA2_Problem(ElementwiseProblem):
         
         if g1_cap > 0 or g2_w > 0:
             out["F"] = [10.0, 0.0]
-            out["G"] = [g1_cap, g2_w, 10., 10., 10., 10., 10., 10.]
+            out["G"] = [g1_cap, g2_w, 10., 10., 10., 10., 10.]
             return
 
         try:
             res = engine.predict(geom=geom_um, L_device_mm=L_dev, Rt=Rt, Zs_driver=65.0, ng=2.27, plot=False)
-            bw  = res['bw'][0]
-            vpi = res['vpi_len'][0]
-            nm  = res['nm'][0]
-            zc  = res['z0'][0]
-            rtm = res['rt_min']
+            bw, vpi, nm, zc, rtm = res['bw'][0], res['vpi_len'][0], res['nm'][0], res['z0'][0], res['rt_min']
         except Exception as e:
-            # THIS PREVENTS SILENT FAILURES FROM NOW ON!
-            st.error(f"[!] ML Physics Engine Error during evaluation: {e}")
+            st.error(f"[!] ML Physics Engine Error: {e}")
             bw, vpi, nm, zc, rtm = 0.0, 10.0, 0.0, 0.0, 100.0
 
         g3_nm_low = (target_nm - target_tol) - nm
         g4_nm_high = nm - (target_nm + target_tol)
-        g5_zc = target_zc - zc
-        g6_rt = rtm - Rt
-        g7_bw = target_bw - bw
-        g8_vpi = vpi - target_vpi
+        # Zc constraint removed to let GA find true Pareto limit
+        g5_rt = rtm - Rt
+        g6_bw = target_bw - bw
+        g7_vpi = vpi - target_vpi
 
         out["F"] = [vpi, -bw]
-        out["G"] = [g1_cap, g2_w, g3_nm_low, g4_nm_high, g5_zc, g6_rt, g7_bw, g8_vpi]
+        out["G"] = [g1_cap, g2_w, g3_nm_low, g4_nm_high, g5_rt, g6_bw, g7_vpi]
 
 def slsqp_polisher(x0, bounds_list):
     def get_p(x):
@@ -352,7 +341,7 @@ def generate_exact_svg(p):
         if loc=="top": t-=off; d="auto"
         elif loc=="bottom": t+=off; d="hanging"
         elif loc=="left": m-=off; a="end"
-        elif loc=="right": m+=off; a="start"
+        elif loc=="right": m-=off; a="start"
         return f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{C_LINE}" stroke-width="1.5" marker-start="url(#S)" marker-end="url(#E)" /><text x="{m}" y="{t}" fill="{C_LINE}" font-family="sans-serif" font-size="14" font-weight="bold" text-anchor="{a}" dominant-baseline="{d}">{txt}</text>'
 
     def top(x,y): return CX+x*3.5, 380-y*3.5
@@ -389,8 +378,27 @@ if st.button("🚀 RUN OPTIMIZATION", type="primary"):
 
         st.markdown("---")
         with st.spinner("Step 2/2: Gradient Polishing for Maximum Z0..."):
-            best_idx = np.argmax(-res_ga.F[:,1])
-            final_x = slsqp_polisher(res_ga.X[best_idx], BOUNDS_LIST)
+            
+            # THE FATAL FIX: Find the highest Zc on the Pareto front that meets user targets
+            best_zc = -1
+            best_nsga_x = res_ga.X[0]
+            
+            for x in res_ga.X:
+                try:
+                    res = engine.predict(geom=x[:9].tolist(), L_device_mm=x[9], Rt=x[10], Zs_driver=65.0, ng=2.27, plot=False)
+                    if res['bw'][0] >= target_bw and res['vpi_len'][0] <= target_vpi:
+                        if res['z0'][0] > best_zc:
+                            best_zc = res['z0'][0]
+                            best_nsga_x = x
+                except:
+                    pass
+            
+            # If no strict match found under tolerance, fall back to highest bandwidth
+            if best_zc == -1:
+                best_nsga_x = res_ga.X[np.argmax(-res_ga.F[:,1])]
+            
+            # Polish the optimal seed
+            final_x = slsqp_polisher(best_nsga_x, BOUNDS_LIST)
             res = engine.predict(geom=final_x[:9].tolist(), L_device_mm=final_x[9], Rt=final_x[10], Zs_driver=65.0, ng=2.27, plot=False)
             
         st.header("🏆 Optimal Geometry Found")
@@ -413,6 +421,8 @@ if st.button("🚀 RUN OPTIMIZATION", type="primary"):
         st.markdown("---")
         st.subheader("📊 Detailed Figures of Merit")
         
+        m_nm, m_zc, m_vpi, m_a = res['nm'][2], res['z0'][2], res['vpi_len'][2], res['alpha'][2]
+        
         def fmt(tup): return f"{tup[0]:.3f}", f"[{max(0, tup[0]-1.96*tup[1]):.3f}, {tup[0]+1.96*tup[1]:.3f}]"
 
         nm_v, nm_c = fmt(res['nm'])
@@ -424,17 +434,17 @@ if st.button("🚀 RUN OPTIMIZATION", type="primary"):
         vf_v, vf_c = fmt(res['vpi_full'])
 
         data = [
-            ["Microwave Index (nm)", nm_v, nm_c, f"± {res['nm'][2]:.4f}"],
-            ["Impedance Zc [Ω]", zc_v, zc_c, f"± {res['z0'][2]:.2f}"],
-            ["VPI (Electrostatic) [V]", vp_v, vp_c, f"± {res['vpi_len'][2]:.3f}"],
-            ["RF Attenuation @ 60 GHz [dB/cm]", al_v, al_c, f"± {res['alpha'][2]:.3f}"],
+            ["Microwave Index (nm)", nm_v, nm_c, f"± {m_nm:.4f}"],
+            ["Impedance Zc [Ω]", zc_v, zc_c, f"± {m_zc:.2f}"],
+            ["VPI (Electrostatic) [V]", vp_v, vp_c, f"± {m_vpi:.3f}"],
+            ["RF Attenuation @ 60 GHz [dB/cm]", al_v, al_c, f"± {m_a:.3f}"],
             ["EO Bandwidth [GHz]", bw_v, bw_c, f"± {res['bw'][2]:.1f}"],
             ["VPI @ 60GHz (Walk-off+Mismatch) [V]", vll_v, vll_c, "N/A (Derived)"],
             ["VPI @ 60GHz (Full RF Physics) [V]", vf_v, vf_c, "N/A (Derived)"]
         ]
         st.table(pd.DataFrame(data, columns=["FOM", "Predicted", "95% CI", "Global MAE"]))
         
-        st.markdown("### 📈 Broadband RF Response")
+        st.markdown("### 📈 Broadband RF Response & Attenuation")
         fig_s21, ax_s21 = plt.subplots(figsize=(10, 4))
         ax_s21.plot(res['f_axis'], res['s21'], 'b-', lw=2)
         ax_s21.axhline(-3, color='r', ls='--')
@@ -442,7 +452,6 @@ if st.button("🚀 RUN OPTIMIZATION", type="primary"):
         ax_s21.set(xlabel='Frequency (GHz)', ylabel='S21 (dB)', title='EO Bandwidth', xlim=(0,150), ylim=(-8,1)); ax_s21.grid(ls=':')
         st.pyplot(fig_s21)
         
-        # Pareto Plot
         f2, ax3 = plt.subplots(figsize=(8,4))
         ax3.scatter(res_ga.F[:,0], -res_ga.F[:,1], c='blue', alpha=0.7)
         ax3.scatter(res['vpi_len'][0], res['bw'][0], c='gold', s=200, edgecolors='k', marker='*', label='SLSQP Final Winner')
