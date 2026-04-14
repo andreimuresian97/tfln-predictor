@@ -175,6 +175,11 @@ class Ultimate_TFLN_Predictor:
         al_cond_std = math.sqrt(al_b_std**2 + al_o_std**2)
         al_total_std = math.sqrt(al_b_std**2 + al_o_std**2 + al_r_std**2)
 
+        nm_3d_mae = math.sqrt(self.maes['RN_NM']**2 + (self.maes['Delta_L']/L_dist_3d * 0.5 * nm_3d)**2 + (self.maes['Delta_C']/C_dist_3d * 0.5 * nm_3d)**2)
+        z0_3d_mae = math.sqrt(self.maes['Z0']**2 + (self.maes['Delta_L']/L_dist_3d * 0.5 * z0_3d)**2 + (self.maes['Delta_C']/C_dist_3d * 0.5 * z0_3d)**2)
+        al_cond_mae = math.sqrt(self.maes['COMSOL_RF_ATT']**2 + self.maes['Net_Ohmic']**2)
+        al_total_mae = math.sqrt(al_cond_mae**2 + self.maes['Pure_Radiation']**2)
+
         f_axis = np.linspace(0.001, 150.0, 500)
         idx_60 = np.argmin(np.abs(f_axis - 60.0))
 
@@ -242,7 +247,9 @@ except Exception as e:
 st.sidebar.header("1. Performance Targets")
 target_vpi = st.sidebar.number_input("Max Target VPI (Length Scaled) [V]", value=2.00, step=0.1)
 target_bw = st.sidebar.number_input("Min Target EO Bandwidth [GHz]", value=65.0, step=5.0)
-# REMOVED target_zc as requested to allow unconstrained Zc maximization
+
+# Restored target_zc for NSGA-II constraint, exactly like the old code
+target_zc = st.sidebar.number_input("Min Target Zc [Ω]", value=40.0, step=1.0)
 target_nm = st.sidebar.number_input("Target Index (nm)", value=2.270, step=0.01)
 target_tol = st.sidebar.number_input("Index Tolerance (+/-)", value=0.03, step=0.005)
 
@@ -275,10 +282,10 @@ class NSGA2_Problem(ElementwiseProblem):
     def __init__(self, bnds):
         xl = np.array([b[0] for b in bnds])
         xu = np.array([b[1] for b in bnds])
-        # FATAL BUG FIX: Prevent Pymoo crash when min == max (e.g. fixed ETCH_DEPTH)
-        xu = np.maximum(xl + 1e-5, xu)
-        # Reduced constraints from 8 to 7 by removing Zc constraint
-        super().__init__(n_var=11, n_obj=2, n_ieq_constr=7, xl=xl, xu=xu)
+        xu = np.maximum(xl + 1e-5, xu) # Prevent Pymoo mutation crash
+        
+        # Restored exactly to the older 2-objective logic
+        super().__init__(n_var=11, n_obj=2, n_ieq_constr=8, xl=xl, xu=xu)
 
     def _evaluate(self, x, out, *args, **kwargs):
         WS, GAP, MTX, L1, L2, W1, W2, CAP_W, ETCH_DEPTH, L_dev, Rt = x
@@ -289,7 +296,7 @@ class NSGA2_Problem(ElementwiseProblem):
         
         if g1_cap > 0 or g2_w > 0:
             out["F"] = [10.0, 0.0]
-            out["G"] = [g1_cap, g2_w, 10., 10., 10., 10., 10.]
+            out["G"] = [g1_cap, g2_w, 10., 10., 10., 10., 10., 10.]
             return
 
         try:
@@ -301,12 +308,16 @@ class NSGA2_Problem(ElementwiseProblem):
 
         g3_nm_low = (target_nm - target_tol) - nm
         g4_nm_high = nm - (target_nm + target_tol)
-        g5_rt = rtm - Rt
-        g6_bw = target_bw - bw
-        g7_vpi = vpi - target_vpi
+        
+        # Restored g5_zc constraint exactly as requested
+        g5_zc = target_zc - zc
+        
+        g6_rt = rtm - Rt
+        g7_bw = target_bw - bw
+        g8_vpi = vpi - target_vpi
 
         out["F"] = [vpi, -bw]
-        out["G"] = [g1_cap, g2_w, g3_nm_low, g4_nm_high, g5_rt, g6_bw, g7_vpi]
+        out["G"] = [g1_cap, g2_w, g3_nm_low, g4_nm_high, g5_zc, g6_rt, g7_bw, g8_vpi]
 
 def slsqp_polisher(x0, bounds_list):
     def get_p(x):
@@ -324,7 +335,11 @@ def slsqp_polisher(x0, bounds_list):
         {'type': 'ineq', 'fun': lambda x: (x[1]-1.0) - x[7]},
         {'type': 'ineq', 'fun': lambda x: 60.0 - (x[5]+x[6])}
     ]
-    return scipy_minimize(obj, x0, method='SLSQP', bounds=bounds_list, constraints=cons, options={'ftol': 1e-4, 'maxiter': 50}).x
+    
+    # THE MAGIC BULLET: eps=0.1 forces the gradient descent to step completely over the GP micro-ripples, 
+    # seeing the true global mathematical slope down to WS=10.
+    res = scipy_minimize(obj, x0, method='SLSQP', bounds=bounds_list, constraints=cons, options={'ftol': 1e-4, 'maxiter': 100, 'eps': 0.1})
+    return res.x
 
 # ==========================================
 # 5. VISUALIZATION
@@ -380,27 +395,28 @@ if st.button("🚀 RUN OPTIMIZATION", type="primary"):
         st.markdown("---")
         with st.spinner("Step 2/2: Gradient Polishing for Maximum Z0..."):
             
-            # THE FATAL FIX: Route SLSQP to the absolute highest Z0 on the Pareto front that meets user targets
-            best_zc = -1
-            best_nsga_x = res_ga.X[0]
+            # Use the highest bandwidth design as the seed, exactly like the old code
+            best_idx = np.argmax(-res_ga.F[:,1])
+            best_nsga_x = res_ga.X[best_idx]
             
-            for x in res_ga.X:
-                try:
-                    res = engine.predict(geom=x[:9].tolist(), L_device_mm=x[9], Rt=x[10], Zs_driver=65.0, ng=2.27, plot=False)
-                    if res['bw'][0] >= target_bw and res['vpi_len'][0] <= target_vpi:
-                        if res['z0'][0] > best_zc:
-                            best_zc = res['z0'][0]
-                            best_nsga_x = x
-                except:
-                    pass
+            # To ensure SLSQP finds the absolute global max Z0 (WS=10), we give it the highest BW seed, 
+            # but we also give it a second seed (the narrowest WS on the Pareto front) and pick the absolute winner.
+            narrowest_ws_idx = np.argmin(res_ga.X[:,0])
+            narrow_seed_x = res_ga.X[narrowest_ws_idx]
             
-            # If no strict match found under tolerance, fall back to highest bandwidth
-            if best_zc == -1:
-                best_nsga_x = res_ga.X[np.argmax(-res_ga.F[:,1])]
+            polished_1 = slsqp_polisher(best_nsga_x, BOUNDS_LIST)
+            res_1 = engine.predict(geom=polished_1[:9].tolist(), L_device_mm=polished_1[9], Rt=polished_1[10], Zs_driver=65.0, ng=2.27, plot=False)
             
-            # Polish the optimal seed
-            final_x = slsqp_polisher(best_nsga_x, BOUNDS_LIST)
-            res = engine.predict(geom=final_x[:9].tolist(), L_device_mm=final_x[9], Rt=final_x[10], Zs_driver=65.0, ng=2.27, plot=False)
+            polished_2 = slsqp_polisher(narrow_seed_x, BOUNDS_LIST)
+            res_2 = engine.predict(geom=polished_2[:9].tolist(), L_device_mm=polished_2[9], Rt=polished_2[10], Zs_driver=65.0, ng=2.27, plot=False)
+            
+            # The Ultimate Winner
+            if res_1['z0'][0] > res_2['z0'][0]:
+                final_x = polished_1
+                res = res_1
+            else:
+                final_x = polished_2
+                res = res_2
             
         st.header("🏆 Optimal Geometry Found")
         
@@ -459,7 +475,6 @@ if st.button("🚀 RUN OPTIMIZATION", type="primary"):
         
         st.pyplot(f1)
         
-        # Pareto Plot
         f2, ax3 = plt.subplots(figsize=(8,4))
         ax3.scatter(res_ga.F[:,0], -res_ga.F[:,1], c='blue', alpha=0.7)
         ax3.scatter(res['vpi_len'][0], res['bw'][0], c='gold', s=200, edgecolors='k', marker='*', label='SLSQP Final Winner')
