@@ -221,22 +221,30 @@ class Ultimate_TFLN_Predictor:
         rt_min_zs = Zs_driver * (1 - gamma_limit) / (1 + gamma_limit) 
         rt_min_zc = z0_3d * (1 - gamma_limit) / (1 + gamma_limit) 
 
-        # FIXED: Added the alpha_curve arrays to prevent Streamlit plotting KeyErrors
+
+        # Generate the decoupled alpha arrays for the Plotly/Matplotlib visualization
         f_ratio = np.maximum(f_axis, 1e-9) / 60.0
         alpha_curve_nom = al_cond * np.sqrt(f_ratio) + al_r * (f_ratio**3)
         alpha_curve_bc = np.maximum(0.0, (al_cond - 1.96*al_cond_std) * np.sqrt(f_ratio) + max(0.0, al_r - 1.96*al_r_std) * (f_ratio**3))
         alpha_curve_wc = (al_cond + 1.96*al_cond_std) * np.sqrt(f_ratio) + (al_r + 1.96*al_r_std) * (f_ratio**3)
 
         return {
-            'nm': (nm_3d, nm_3d_std, self.maes['RN_NM']), 'z0': (z0_3d, z0_3d_std, self.maes['Z0']),
+            'nm': (nm_3d, nm_3d_std, self.maes['RN_NM']), 
+            'z0': (z0_3d, z0_3d_std, self.maes['Z0']),
             'alpha': (al_total_60, al_total_std, self.maes['Pure_Radiation']),
             'vpi_base': (vpi_b, vpi_b_std, self.maes['VPI_L']),
             'vpi_duty': (vpi_duty, vpi_b_std/(1-duty_cycle), self.maes['VPI_L']/(1-duty_cycle)),
             'vpi_len': (vpi_length, (vpi_b_std/(1-duty_cycle))/L_cm, self.maes['VPI_L']),
-            'vpi_ll': (vll_nom, vll_std, 0.0), 'vpi_full': (vfull_nom, vfull_std, 0.0), 
-            'bw': (bw_nom, bw_std, 0.0), 'rt_min': max(rt_min_zs, rt_min_zc),
-            'f_axis': f_axis, 's21': s21_nom_curve,
-            'alpha_curve_nom': alpha_curve_nom, 'alpha_curve_bc': alpha_curve_bc, 'alpha_curve_wc': alpha_curve_wc
+            'vpi_ll': (vll_nom, vll_std, 0.0), 
+            'vpi_full': (vfull_nom, vfull_std, 0.0), 
+            'bw': (bw_nom, bw_std, 0.0), 
+            'rt_min': max(rt_min_zs, rt_min_zc),
+            'f_axis': f_axis, 
+            's21': s21_nom_curve,
+            # --- ADD THE MISSING KEYS HERE ---
+            'alpha_curve_nom': alpha_curve_nom, 
+            'alpha_curve_bc': alpha_curve_bc, 
+            'alpha_curve_wc': alpha_curve_wc
         }
 
 @st.cache_resource
