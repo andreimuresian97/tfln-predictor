@@ -186,10 +186,10 @@ class Ultimate_TFLN_Predictor:
         }
 
 @st.cache_resource
-def load_engine(): return Ultimate_TFLN_Predictor()
+def load_plotter_engine(): return Ultimate_TFLN_Predictor()
 
 try:
-    engine = load_engine()
+    engine = load_plotter_engine()
 except Exception as e:
     st.error(f"Failed to load predictor models. Error: {e}")
     st.stop()
