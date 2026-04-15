@@ -11,11 +11,11 @@ import matplotlib.pyplot as plt
 from scipy.optimize import minimize as scipy_minimize
 import torch
 from torch.quasirandom import SobolEngine
+import pickle
+import math
+from pathlib import Path
 import warnings
 import base64
-
-# Import the new, highly accurate Ultimate Predictor
-from ultimate_predictor import Ultimate_TFLN_Predictor
 
 warnings.filterwarnings('ignore')
 
@@ -29,9 +29,217 @@ The hybrid GP-Physics engine floods the 11-DOF space using a Quasi-Monte Carlo S
 scores candidates using Weighted Euclidean Distance, and uses an **SLSQP Gradient Polisher** to mathematically slide the best candidates perfectly into your targets.
 """)
 
-# ==========================================
-# 2. CACHED ENGINE LOADER
-# ==========================================
+# =====================================================================
+# 2. THE ULTIMATE PREDICTOR ENGINE (Embedded for Streamlit Cache)
+# =====================================================================
+class Ultimate_TFLN_Predictor:
+    def __init__(self, dir_vpi="gp_surrogate_results_ultimate_500LHS/GP_files_Vpi", 
+                 dir_nm_z0="gp_surrogate_results_ultimate_500LHS/GP_files_nm_Z0", 
+                 dir_alpha="gp_surrogate_results_ultimate_500LHS/GP_files_RF_alpha"):
+        
+        self.dirs = {'VPI': Path(dir_vpi), 'NM_Z0': Path(dir_nm_z0), 'ALPHA': Path(dir_alpha)}
+        self.models, self.scalers = {}, {}
+        
+        self.maes = {
+            'VPI_L': 0.0866, 'RN_NM': 5.77651e-04, 'Z0': 2.51204e-02,
+            'Delta_L': 2.59073e-13, 'Delta_C': 6.83945e-17,
+            'COMSOL_RF_ATT': 3.49594e-03, 'Net_Ohmic': 0.0563, 'Pure_Radiation': 0.1612
+        }
+        self.c0 = 299792458.0
+        self.L_cell = 200e-6
+        self._load_system()
+
+    def _load_system(self):
+        with open(self.dirs['VPI'] / "scalers_COMSOL.pkl", 'rb') as f:
+            d = pickle.load(f); self.scalers['VPI_X'], self.scalers['VPI_y'] = d['X'], d['y']['VPI_L [V*cm]']
+        with open(self.dirs['VPI'] / "gp_model_VPI_L_V_cm.pkl", 'rb') as f: self.models['VPI'] = pickle.load(f)
+
+        with open(self.dirs['NM_Z0'] / "scalers_COMSOL.pkl", 'rb') as f: self.scalers['NMZ0_C'] = pickle.load(f)
+        with open(self.dirs['NM_Z0'] / "scalers_CST.pkl", 'rb') as f: self.scalers['NMZ0_CST'] = pickle.load(f)
+        for m in [('RN_NM', 'gp_model_RN_NM.pkl'), ('Z0', 'gp_model_Z0_Ω.pkl'), ('dL', 'gp_model_Delta_L_lumped.pkl'), ('dC', 'gp_model_Delta_C_lumped.pkl')]:
+            with open(self.dirs['NM_Z0'] / m[1], 'rb') as f: self.models[m[0]] = pickle.load(f)
+
+        with open(self.dirs['ALPHA'] / "scalers_COMSOL.pkl", 'rb') as f:
+            d = pickle.load(f); self.scalers['AL_C_X'], self.scalers['AL_C_y'] = d['X'], d['y']['RF ATT [dB/cm]']
+        with open(self.dirs['ALPHA'] / "scalers_Net_Ohmic_Penalty.pkl", 'rb') as f:
+            d = pickle.load(f); self.scalers['AL_O_X'], self.scalers['AL_O_y'] = d['scaler_X'], d['scaler_y']
+        with open(self.dirs['ALPHA'] / "scalers_Pure_Radiation.pkl", 'rb') as f:
+            d = pickle.load(f); self.scalers['AL_R_X'], self.scalers['AL_R_y'] = d['scaler_X'], d['scaler_y']
+        for m in [('AL_C', 'gp_model_RF_ATT_dB_cm_COMSOL.pkl'), ('AL_O', 'gp_model_Net_Ohmic_Penalty.pkl'), ('AL_R', 'gp_model_Pure_Radiation.pkl')]:
+            with open(self.dirs['ALPHA'] / m[1], 'rb') as f: self.models[m[0]] = pickle.load(f)
+
+    def _predict_log10(self, model_key, scaler_X, scaler_y, X_input):
+        X_scaled = scaler_X.transform(X_input)
+        y_norm, y_std = self.models[model_key].predict(X_scaled, return_std=True)
+        y_log = scaler_y.inverse_transform(y_norm.reshape(-1, 1)).ravel()[0]
+        std_log = y_std[0] * scaler_y.scale_[0]
+        val = (10 ** y_log) - 1e-15
+        low = max(0.0, (10 ** (y_log - 1.96 * std_log)) - 1e-15)
+        high = (10 ** (y_log + 1.96 * std_log)) - 1e-15
+        return val, (high - low) / (2 * 1.96)
+
+    def _predict_lin(self, model_key, scaler_X, scaler_y, X_input, limit_zero=False):
+        X_scaled = scaler_X.transform(X_input)
+        y_norm, y_std = self.models[model_key].predict(X_scaled, return_std=True)
+        if isinstance(scaler_y, dict): pass
+        val = scaler_y.inverse_transform(y_norm.reshape(-1, 1)).ravel()[0]
+        std = y_std[0] * scaler_y.scale_[0]
+        if limit_zero: val = max(0.0, val)
+        return val, std
+
+    def calc_eo_response(self, f_GHz, a_cond, a_rad, nm, zc, L_cm, ng, Rt, Zs):
+        L_m = L_cm / 100.0
+        f_ratio = np.maximum(f_GHz, 1e-9) / 60.0
+        alpha_dB_cm = a_cond * np.sqrt(f_ratio) + a_rad * (f_ratio**3)
+        alpha_np_m = alpha_dB_cm * (100.0 / 8.686)
+        
+        beta_rf = 2 * np.pi * f_GHz * 1e9 * nm / self.c0
+        gamma_m = alpha_np_m + 1j * beta_rf
+        gamma_o = 1j * 2 * np.pi * f_GHz * 1e9 * ng / self.c0
+
+        Gamma_L = (Rt - zc) / (Rt + zc)
+        Gamma_S = (Zs - zc) / (Zs + zc)
+        
+        denom = 1 - Gamma_S * Gamma_L * np.exp(-2 * gamma_m * L_m)
+        denom = np.where(np.abs(denom) < 1e-12, 1e-12, denom)
+        
+        delta1 = gamma_o - gamma_m
+        delta2 = gamma_o + gamma_m
+
+        int1 = np.where(np.abs(delta1) < 1e-12, L_m, (np.exp(delta1 * L_m) - 1) / delta1)
+        int2 = np.where(np.abs(delta2) < 1e-12, L_m * np.exp(-2 * gamma_m * L_m), np.exp(-2 * gamma_m * L_m) * (np.exp(delta2 * L_m) - 1) / delta2)
+
+        S21_eo = (int1 + Gamma_L * int2) / denom
+        S21_mag = np.abs(S21_eo)
+        idx_1GHz = np.argmin(np.abs(f_GHz - 1.0))
+        
+        norm_val = max(1e-12, S21_mag[idx_1GHz])
+        return 20 * np.log10(S21_mag / norm_val), S21_mag
+
+    def get_bandwidth(self, f_GHz, s21_db):
+        for i in range(len(s21_db)):
+            if s21_db[i] <= -3.0:
+                if i > 0:
+                    f1, f2 = f_GHz[i-1], f_GHz[i]
+                    s1, s2 = s21_db[i-1], s21_db[i]
+                    denom = s2 - s1
+                    if denom == 0: denom = 1e-12
+                    return f1 + (f2 - f1) * (-3.0 - s1) / denom
+                return f_GHz[i]
+        return f_GHz[-1]
+
+    def predict(self, geom, L_device_mm, Rt, Zs_driver=65.0, ng=2.27, plot=False):
+        WS, GAP, MTX, L1, L2, W1, W2, CAP_W, ETCH_DEPTH = geom
+        L_cm = L_device_mm / 10.0
+        SLAB_H = 0.460 - ETCH_DEPTH
+        Perimeter = L1 + L2 + W1 + W2
+        Bragg_Proxy = Perimeter * (WS / GAP)
+
+        x_c_5  = np.array([[WS, GAP, MTX, CAP_W, ETCH_DEPTH]])
+        x_c_8  = np.array([[WS, GAP, MTX, L1, L2, W1, W2, ETCH_DEPTH]])
+        x_c_9  = np.array([[WS, GAP, MTX, L1, L2, W1, W2, ETCH_DEPTH, Bragg_Proxy]])
+        x_lc_9 = np.array([[WS, GAP, MTX, L1, L2, W1, W2, SLAB_H, Perimeter]])
+
+        vpi_b, vpi_b_std = self._predict_log10('VPI', self.scalers['VPI_X'], self.scalers['VPI_y'], x_c_5)
+        
+        nm_2d, nm_2d_std = self._predict_lin('RN_NM', self.scalers['NMZ0_C']['X'], self.scalers['NMZ0_C']['y']['RN NM'], x_c_5)
+        z0_2d, z0_2d_std = self._predict_lin('Z0', self.scalers['NMZ0_C']['X'], self.scalers['NMZ0_C']['y']['Z0 [Ω]'], x_c_5)
+        nm_2d = max(1.0, nm_2d); z0_2d = max(1.0, z0_2d)
+        
+        dL, dL_std = self._predict_lin('dL', self.scalers['NMZ0_CST']['X'], self.scalers['NMZ0_CST']['y']['Delta_L_lumped'], x_lc_9)
+        dC, dC_std = self._predict_lin('dC', self.scalers['NMZ0_CST']['X'], self.scalers['NMZ0_CST']['y']['Delta_C_lumped'], x_lc_9)
+        dL, dL_std, dC, dC_std = dL/1e12, dL_std/1e12, dC/1e15, dC_std/1e15
+
+        al_b, al_b_std = self._predict_log10('AL_C', self.scalers['AL_C_X'], self.scalers['AL_C_y'], x_c_5)
+        al_o, al_o_std = self._predict_lin('AL_O', self.scalers['AL_O_X'], self.scalers['AL_O_y'], x_c_8)
+        al_r, al_r_std = self._predict_lin('AL_R', self.scalers['AL_R_X'], self.scalers['AL_R_y'], x_c_9, limit_zero=True)
+
+        L_dist_3d = max(1e-15, (z0_2d * nm_2d / self.c0) + (dL / self.L_cell))
+        C_dist_3d = max(1e-15, (nm_2d / (z0_2d * self.c0)) + (dC / self.L_cell))
+        nm_3d = self.c0 * math.sqrt(L_dist_3d * C_dist_3d)
+        z0_3d = math.sqrt(L_dist_3d / C_dist_3d)
+        
+        al_cond = al_b + al_o
+        al_total_60 = al_cond + al_r
+
+        duty_cycle = L1 / 200.0
+        vpi_duty = vpi_b / (1.0 - duty_cycle)
+        vpi_length = vpi_duty / L_cm
+
+        nm_3d_std = math.sqrt(nm_2d_std**2 + (dL_std/L_dist_3d * 0.5 * nm_3d)**2 + (dC_std/C_dist_3d * 0.5 * nm_3d)**2)
+        z0_3d_std = math.sqrt(z0_2d_std**2 + (dL_std/L_dist_3d * 0.5 * z0_3d)**2 + (dC_std/C_dist_3d * 0.5 * z0_3d)**2)
+        al_cond_std = math.sqrt(al_b_std**2 + al_o_std**2)
+        al_total_std = math.sqrt(al_b_std**2 + al_o_std**2 + al_r_std**2)
+
+        nm_3d_mae = math.sqrt(self.maes['RN_NM']**2 + (self.maes['Delta_L']/L_dist_3d * 0.5 * nm_3d)**2 + (self.maes['Delta_C']/C_dist_3d * 0.5 * nm_3d)**2)
+        z0_3d_mae = math.sqrt(self.maes['Z0']**2 + (self.maes['Delta_L']/L_dist_3d * 0.5 * z0_3d)**2 + (self.maes['Delta_C']/C_dist_3d * 0.5 * z0_3d)**2)
+        al_cond_mae = math.sqrt(self.maes['COMSOL_RF_ATT']**2 + self.maes['Net_Ohmic']**2)
+        al_total_mae = math.sqrt(al_cond_mae**2 + self.maes['Pure_Radiation']**2)
+
+        f_axis = np.linspace(0.001, 150.0, 500)
+        idx_60 = np.argmin(np.abs(f_axis - 60.0))
+
+        def compute_foms(n_val, z_val, a_c_val, a_r_val):
+            s21_dB_ll, s21_mag_ll = self.calc_eo_response(f_axis, 1e-8, 1e-8, n_val, z_val, L_cm, ng, Rt, Zs_driver)
+            s21_dB_full, s21_mag_full = self.calc_eo_response(f_axis, a_c_val, a_r_val, n_val, z_val, L_cm, ng, Rt, Zs_driver)
+            bw = self.get_bandwidth(f_axis, s21_dB_full)
+            
+            mag_ratio_ll = max(1e-12, s21_mag_ll[idx_60] / max(1e-12, s21_mag_ll[0]))
+            vpi_ll = vpi_length / mag_ratio_ll
+            
+            mag_ratio_full = max(1e-12, s21_mag_full[idx_60] / max(1e-12, s21_mag_full[0]))
+            vpi_full = vpi_length / mag_ratio_full
+            
+            return bw, vpi_ll, vpi_full, s21_dB_full
+
+        bw_nom, vll_nom, vfull_nom, s21_nom_curve = compute_foms(nm_3d, z0_3d, al_cond, al_r)
+
+        d_nm = max(0.01 * abs(nm_3d), 1e-6)
+        d_z0 = max(0.01 * abs(z0_3d), 1e-6)
+        d_ac = max(0.01 * abs(al_cond), 1e-6)
+        d_ar = max(0.01 * abs(al_r), 1e-6)
+        
+        bw_nm, vll_nm, vfull_nm, _ = compute_foms(nm_3d + d_nm, z0_3d, al_cond, al_r)
+        bw_z0, vll_z0, vfull_z0, _ = compute_foms(nm_3d, z0_3d + d_z0, al_cond, al_r)
+        bw_ac, vll_ac, vfull_ac, _ = compute_foms(nm_3d, z0_3d, al_cond + d_ac, al_r)
+        bw_ar, vll_ar, vfull_ar, _ = compute_foms(nm_3d, z0_3d, al_cond, al_r + d_ar)
+
+        def propagate(f_nom, f_n, f_z, f_c, f_r, uncert_n, uncert_z, uncert_c, uncert_r):
+            return math.sqrt( (((f_n - f_nom)/d_nm)*uncert_n)**2 + (((f_z - f_nom)/d_z0)*uncert_z)**2 +
+                              (((f_c - f_nom)/d_ac)*uncert_c)**2 + (((f_r - f_nom)/d_ar)*uncert_r)**2 )
+
+        bw_std = propagate(bw_nom, bw_nm, bw_z0, bw_ac, bw_ar, nm_3d_std, z0_3d_std, al_cond_std, al_r_std)
+        bw_mae = propagate(bw_nom, bw_nm, bw_z0, bw_ac, bw_ar, nm_3d_mae, z0_3d_mae, self.maes['COMSOL_RF_ATT'], self.maes['Pure_Radiation'])
+        vll_std = propagate(vll_nom, vll_nm, vll_z0, vll_nom, vll_nom, nm_3d_std, z0_3d_std, 0, 0)
+        vfull_std = propagate(vfull_nom, vfull_nm, vfull_z0, vfull_ac, vfull_ar, nm_3d_std, z0_3d_std, al_cond_std, al_r_std)
+
+        gamma_limit = 10 ** (-10.0 / 20.0) 
+        rt_min_zs = Zs_driver * (1 - gamma_limit) / (1 + gamma_limit) 
+        rt_min_zc = z0_3d * (1 - gamma_limit) / (1 + gamma_limit) 
+
+        f_ratio = np.maximum(f_axis, 1e-9) / 60.0
+        alpha_curve_nom = al_cond * np.sqrt(f_ratio) + al_r * (f_ratio**3)
+        alpha_curve_bc = np.maximum(0.0, (al_cond - 1.96*al_cond_std) * np.sqrt(f_ratio) + max(0.0, al_r - 1.96*al_r_std) * (f_ratio**3))
+        alpha_curve_wc = (al_cond + 1.96*al_cond_std) * np.sqrt(f_ratio) + (al_r + 1.96*al_r_std) * (f_ratio**3)
+
+        return {
+            'nm': (nm_3d, nm_3d_std, self.maes['RN_NM']), 
+            'z0': (z0_3d, z0_3d_std, self.maes['Z0']),
+            'alpha': (al_total_60, al_total_std, self.maes['Pure_Radiation']),
+            'vpi_base': (vpi_b, vpi_b_std, self.maes['VPI_L']),
+            'vpi_duty': (vpi_duty, vpi_b_std/(1-duty_cycle), self.maes['VPI_L']/(1-duty_cycle)),
+            'vpi_len': (vpi_length, (vpi_b_std/(1-duty_cycle))/L_cm, self.maes['VPI_L']),
+            'vpi_ll': (vll_nom, vll_std, 0.0), 
+            'vpi_full': (vfull_nom, vfull_std, 0.0), 
+            'bw': (bw_nom, bw_std, 0.0), 
+            'rt_min': max(rt_min_zs, rt_min_zc),
+            'f_axis': f_axis, 
+            's21': s21_nom_curve,
+            'alpha_curve_nom': alpha_curve_nom, 
+            'alpha_curve_bc': alpha_curve_bc, 
+            'alpha_curve_wc': alpha_curve_wc
+        }
+
 @st.cache_resource
 def load_engine():
     return Ultimate_TFLN_Predictor()
@@ -65,8 +273,6 @@ def range_input(label, min_def, max_def, step=0.1, fmt="%.2f"):
     return (c1.number_input(f"Min {label}", value=float(min_def), step=step, format=fmt),
             c2.number_input(f"Max {label}", value=float(max_def), step=step, format=fmt))
 
-# 11 DOFs Exact Mapping
-# [0:WS, 1:GAP, 2:MTX, 3:L1, 4:L2, 5:W1, 6:W2, 7:CAP_W, 8:ETCH_DEPTH, 9:L_dev, 10:Rt]
 b_WS    = range_input("WS [µm]", 10.0, 60.0)
 b_GAP   = range_input("GAP [µm]", 4.0, 12.0)
 b_MTX   = range_input("MTX [µm]", 1.5, 12.0)
@@ -91,32 +297,27 @@ def slsqp_inverse_polish(best_sobol_x):
     
     def get_p(x):
         try:
-            # FIXED: Flawless list indexing. L_dev = x[9], Rt = x[10]
             res = engine.predict(geom=x[:9].tolist(), L_device_mm=x[9], Rt=x[10], Zs_driver=65.0, ng=2.27, plot=False)
-            
-            # FIXED: Perfect Tuple Unpacking [0] for physical means
             return {
                 'bw': res['bw'][0],
                 'vpi_len': res['vpi_len'][0],
                 'zc': res['z0'][0],
                 'nm': res['nm'][0],
-                'rt_min': res['rt_min'] # Float, not a tuple
+                'rt_min': res['rt_min'] 
             }
         except Exception:
             return {'bw': 0.0, 'vpi_len': 10.0, 'zc': 0.0, 'nm': 10.0, 'rt_min': 100.0}
 
     def objective(x):
         p = get_p(x)
-        # Weighted Euclidean Distance from Target
         return ((p['bw'] - t_bw)/tol_bw)**2 + \
                ((p['vpi_len'] - t_vpi)/tol_vpi)**2 + \
                ((p['zc'] - t_zc)/tol_zc)**2 + \
                ((p['nm'] - t_nm)/tol_nm)**2
 
-    # Scipy Constraints (Must be >= 0)
     def ineq_rt(x): return x[10] - get_p(x)['rt_min']
-    def ineq_cap(x): return (x[1] - 1.0) - x[7]  # GAP - 1.0 - CAP_W >= 0
-    def ineq_wsum(x): return 60.0 - (x[5] + x[6]) # 60 - W1 - W2 >= 0
+    def ineq_cap(x): return (x[1] - 1.0) - x[7]  
+    def ineq_wsum(x): return 60.0 - (x[5] + x[6]) 
 
     cons = [
         {'type': 'ineq', 'fun': ineq_rt},
@@ -147,7 +348,7 @@ def generate_exact_svg(p):
         if loc=="top": t-=off; d="auto"
         elif loc=="bottom": t+=off; d="hanging"
         elif loc=="left": m-=off; a="end"
-        elif loc=="right": m+=off; a="start"
+        elif loc=="right": m-=off; a="start"
         return f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{C_LINE}" stroke-width="1.5" marker-start="url(#S)" marker-end="url(#E)" /><text x="{m}" y="{t}" fill="{C_LINE}" font-family="sans-serif" font-size="14" font-weight="bold" text-anchor="{a}" dominant-baseline="{d}">{txt}</text>'
 
     def top(x,y): return CX+x*3.5, 380-y*3.5
@@ -166,41 +367,33 @@ def generate_exact_svg(p):
 # ==========================================
 # 6. EXECUTION PIPELINE
 # ==========================================
-if st.button("🚀 Run Goal-Seeking Synthesizer", use_container_width=True):
+if st.button("🚀 Run Goal-Seeking Synthesizer", type="primary"):
     N_CANDS = 250000
     prog = st.progress(0.0, f"Stage 1: Flooding space with {N_CANDS} Sobol sequence geometries...")
     
-    # 1. Generate Sobol Matrix
     sobol = SobolEngine(11, scramble=True, seed=42)
     X_u = sobol.draw(N_CANDS).numpy()
     mins = np.array([b[0] for b in BOUNDS_LIST])
     maxs = np.array([b[1] for b in BOUNDS_LIST])
     X_p = mins + X_u * (maxs - mins)
     
-    # 2. Fast Geometric Sieve (CAP_W <= GAP - 1.0 & W1 + W2 <= 60.0)
-    # [0:WS, 1:GAP, 2:MTX, 3:L1, 4:L2, 5:W1, 6:W2, 7:CAP_W, 8:ETCH_DEPTH, 9:L_dev, 10:Rt]
     mask_geom = (X_p[:, 7] <= X_p[:, 1] - 1.0) & ((X_p[:, 5] + X_p[:, 6]) <= 60.0)
     X_v = X_p[mask_geom]
     
     prog.progress(0.2, f"Stage 2: Instant Vectorized ML Inference on {len(X_v)} valid geometries...")
     
-    # Map arrays for Vectorized ML
     WS, GAP, MTX, L1, L2, W1, W2, CAP_W, ETCH, L_dev, Rt = [X_v[:, i] for i in range(11)]
     SLAB_H = 0.460 - ETCH
     Perimeter = L1 + L2 + W1 + W2
     
-    # Matching Predictor architecture
     x_c_5 = np.column_stack((WS, GAP, MTX, CAP_W, ETCH))
     x_lc_9 = np.column_stack((WS, GAP, MTX, L1, L2, W1, W2, SLAB_H, Perimeter))
     
-    # --- Vectorized Fast Predict ---
-    # VPI
     X_vpi_sc = engine.scalers['VPI_X'].transform(x_c_5)
     vpi_norm, _ = engine.models['VPI'].predict(X_vpi_sc, return_std=True)
     vpi_log = engine.scalers['VPI_y'].inverse_transform(vpi_norm.reshape(-1, 1)).ravel()
     vpi_b = (10 ** vpi_log) - 1e-15
     
-    # NM and Z0
     X_nm_sc = engine.scalers['NMZ0_C']['X'].transform(x_c_5)
     nm_2d_norm, _ = engine.models['RN_NM'].predict(X_nm_sc, return_std=True)
     nm_2d = engine.scalers['NMZ0_C']['y']['RN NM'].inverse_transform(nm_2d_norm.reshape(-1, 1)).ravel()
@@ -208,7 +401,6 @@ if st.button("🚀 Run Goal-Seeking Synthesizer", use_container_width=True):
     z0_2d_norm, _ = engine.models['Z0'].predict(X_nm_sc, return_std=True)
     z0_2d = engine.scalers['NMZ0_C']['y']['Z0 [Ω]'].inverse_transform(z0_2d_norm.reshape(-1, 1)).ravel()
     
-    # dL and dC
     X_cst_sc = engine.scalers['NMZ0_CST']['X'].transform(x_lc_9)
     dL_norm, _ = engine.models['dL'].predict(X_cst_sc, return_std=True)
     dL = engine.scalers['NMZ0_CST']['y']['Delta_L_lumped'].inverse_transform(dL_norm.reshape(-1, 1)).ravel() / 1e12
@@ -216,7 +408,6 @@ if st.button("🚀 Run Goal-Seeking Synthesizer", use_container_width=True):
     dC_norm, _ = engine.models['dC'].predict(X_cst_sc, return_std=True)
     dC = engine.scalers['NMZ0_CST']['y']['Delta_C_lumped'].inverse_transform(dC_norm.reshape(-1, 1)).ravel() / 1e15
     
-    # Physics Merge
     L_dist_3d = np.maximum(1e-15, (z0_2d * nm_2d / engine.c0) + (dL / engine.L_cell))
     C_dist_3d = np.maximum(1e-15, (nm_2d / (z0_2d * engine.c0)) + (dC / engine.L_cell))
     nm_3d = engine.c0 * np.sqrt(L_dist_3d * C_dist_3d)
@@ -226,7 +417,6 @@ if st.button("🚀 Run Goal-Seeking Synthesizer", use_container_width=True):
     vpi_duty = vpi_b / (1.0 - duty_cycle)
     vpi_len = vpi_duty / (L_dev / 10.0)
     
-    # 3. Soft Sieve Filtering
     prog.progress(0.6, "Stage 3: Extracting broad performance subsets...")
     mask_perf = (np.abs(nm_3d - t_nm) <= tol_nm * 4) & \
                 (np.abs(z0_3d - t_zc) <= tol_zc * 4) & \
@@ -240,7 +430,6 @@ if st.button("🚀 Run Goal-Seeking Synthesizer", use_container_width=True):
         
     nm_c, zc_c, vpi_c = nm_3d[mask_perf], z0_3d[mask_perf], vpi_len[mask_perf]
     
-    # 4. Pre-rank Top 1500 matches using coarse Euclidean Distance
     pre_err = ((nm_c - t_nm)/tol_nm)**2 + ((zc_c - t_zc)/tol_zc)**2 + ((vpi_c - t_vpi)/tol_vpi)**2
     best_idx = np.argsort(pre_err)[:1500]
     X_cands = X_cands[best_idx]
@@ -249,10 +438,8 @@ if st.button("🚀 Run Goal-Seeking Synthesizer", use_container_width=True):
     final_results = []
     
     for i, x in enumerate(X_cands):
-        # Precise predictor calls (automatically unpackages values correctly via the engine structure)
         res = engine.predict(geom=x[:9].tolist(), L_device_mm=x[9], Rt=x[10], Zs_driver=65.0, ng=2.27, plot=False)
         
-        # EXTRACT NOMINAL VALUES DIRECTLY FROM THE TUPLES!
         nm_v = res['nm'][0]
         zc_v = res['z0'][0]
         vpi_v = res['vpi_len'][0]
@@ -260,7 +447,7 @@ if st.button("🚀 Run Goal-Seeking Synthesizer", use_container_width=True):
         rt_min = res['rt_min']
 
         if x[10] < rt_min:
-            continue # Drops S11 safety violators instantly
+            continue 
 
         err = ((nm_v - t_nm)/tol_nm)**2 + ((zc_v - t_zc)/tol_zc)**2 + \
               ((vpi_v - t_vpi)/tol_vpi)**2 + ((bw_v - t_bw)/tol_bw)**2
@@ -275,7 +462,6 @@ if st.button("🚀 Run Goal-Seeking Synthesizer", use_container_width=True):
     final_results.sort(key=lambda item: item['err'])
     best_coarse_guesses = [r['x'] for r in final_results[:5]]
 
-    # 5. SLSQP Gradient Polish
     prog.progress(0.9, "Stage 5: Gradient-Polishing the best neighborhood guesses to lock into exact targets...")
     st.info("Initiating local gradient descent to find the absolute mathematically exact valleys...")
     
@@ -296,7 +482,7 @@ if 'inv_res' in st.session_state:
     
     for i, x in enumerate(st.session_state['inv_res']):
         with st.expander(f"🏅 Candidate {i+1} | L={x[9]:.1f} mm | Rt={x[10]:.1f} Ω", expanded=(i==0)):
-            res = engine.predict(geom=x[:9].tolist(), L_device_mm=x[9], Rt=x[10], Zs_driver=65.0, ng=2.27, plot=True)
+            res = engine.predict(geom=x[:9].tolist(), L_device_mm=x[9], Rt=x[10], Zs_driver=65.0, ng=2.27, plot=False)
             
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("EO Bandwidth", f"{res['bw'][0]:.1f} GHz", delta=f"{res['bw'][0]-t_bw:+.1f} from target")
@@ -336,8 +522,17 @@ if 'inv_res' in st.session_state:
             ]
             st.table(pd.DataFrame(data, columns=["FOM", "Predicted", "95% CI", "Global MAE"]))
             
-            st.markdown("### 📈 Broadband RF Response")
-            # Natively capture the plot generated by plot=True in the predictor
-            fig = plt.gcf()
-            st.pyplot(fig)
-            plt.clf() # Clean the buffer for the next candidate in the loop
+            st.markdown("### 📈 Broadband RF Response & Attenuation")
+            f1, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+            
+            ax1.plot(res['f_axis'], res['s21'], 'b-', lw=2)
+            ax1.axhline(-3, color='r', ls='--')
+            if res['bw'][0] < 150: ax1.plot(res['bw'][0], -3, 'ko'); ax1.annotate(f"{res['bw'][0]:.1f} GHz", (res['bw'][0]+3, -1.5))
+            ax1.set(xlabel='Frequency (GHz)', ylabel='S21 (dB)', title='EO Bandwidth', xlim=(0,150), ylim=(-8,1)); ax1.grid(ls=':')
+            
+            ax2.plot(res['f_axis'], res['alpha_curve_nom'], 'g-', lw=2, label='Nominal')
+            ax2.fill_between(res['f_axis'], res['alpha_curve_bc'], res['alpha_curve_wc'], color='green', alpha=0.2, label='95% CI')
+            ax2.set(xlabel='Frequency (GHz)', ylabel='Alpha (dB/cm)', title='Decoupled RF Attenuation', xlim=(0,150)); ax2.grid(ls=':')
+            
+            st.pyplot(f1)
+            plt.close(f1)
