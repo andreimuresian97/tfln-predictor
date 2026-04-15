@@ -241,11 +241,11 @@ class Ultimate_TFLN_Predictor:
         }
 
 @st.cache_resource
-def load_engine():
+def load_inverse_engine():
     return Ultimate_TFLN_Predictor()
 
 try:
-    engine = load_engine()
+    engine = load_inverse_engine()
 except Exception as e:
     st.error(f"Failed to load predictor models. Ensure the folder exists. Error: {e}")
     st.stop()
